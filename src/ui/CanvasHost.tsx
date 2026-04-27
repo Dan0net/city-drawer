@@ -38,7 +38,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
 
       const viewport = new Viewport(canvas, handle.world);
       const grid = new DebugGridLayer(viewport);
-      const buildings = new BuildingsLayer(handle.app);
+      const buildings = new BuildingsLayer();
       const edges = new EdgesLayer();
       const ghost = new GhostLayer();
       handle.world.addChild(grid.container);

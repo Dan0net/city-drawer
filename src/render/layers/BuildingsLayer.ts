@@ -1,59 +1,55 @@
-import {
-  Application,
-  Container,
-  Graphics,
-  Particle,
-  ParticleContainer,
-  Texture,
-} from 'pixi.js';
-import type { Building, BuildingId, BuildingType } from '@game/buildings';
-import { BUILDING_COLORS, obbCorners } from '@game/buildings';
+import { Container, Graphics } from 'pixi.js';
+import type { Building, BuildingId, FailedAttempt, FailedAttemptId } from '@game/buildings';
+import { BUILDING_COLORS } from '@game/buildings';
 import { useWorldStore } from '@game/store/worldStore';
-import { bakeBuildingTextures, TEXTURE_SIZE } from '@render/buildings/textures';
 
-const GHOST_TINT = 0xb0b4bb;
+const STROKE_WIDTH = 1.2;
+const DOT_RADIUS = 0.9;
 const BULLDOZE = 0xe55050;
+const FAIL_COLOR = 0xe55050;
+
+const EDGE_DURATION = 0.2;
+const FILL_DURATION = 0.4;
 
 interface Node {
-  particle: Particle;
+  cont: Container;
+  fill: Graphics;
+  stroke: Graphics;
+  localPoly: number[];
+  strokeColor: number;
+  numEdges: number;
+  perimeterDuration: number;
+  done: boolean;
 }
 
-// Single batched container for every building. Each building is one Particle:
-// position/scale/rotation baked at insert, tint+alpha mutated per frame to
-// reflect progress. Stress test: tens of thousands of buildings render in one
-// draw call because everything shares the same shader pipeline.
 export class BuildingsLayer {
   readonly container = new Container();
-  private particles: ParticleContainer;
+  private base = new Container();
   private hover = new Graphics();
-  private nodes = new Map<BuildingId, Node>();
-  private textures: Record<BuildingType, Texture>;
-  private lastVersion = -1;
+  private buildingNodes = new Map<BuildingId, Node>();
+  private failedNodes = new Map<FailedAttemptId, Node>();
+  private lastBuildingsVersion = -1;
+  private lastFailedVersion = -1;
   private lastHover: number | null = null;
 
-  constructor(app: Application) {
+  constructor() {
     this.container.label = 'buildings';
-    this.textures = bakeBuildingTextures(app);
-    this.particles = new ParticleContainer({
-      dynamicProperties: {
-        position: false,
-        scale: false,
-        rotation: false,
-        uvs: false,
-        color: true,
-      },
-    });
-    this.container.addChild(this.particles);
+    this.container.addChild(this.base);
     this.container.addChild(this.hover);
   }
 
   update(): void {
     const s = useWorldStore.getState();
-    if (s.buildingsVersion !== this.lastVersion) {
-      this.lastVersion = s.buildingsVersion;
-      this.syncParticles(s.buildings);
+    if (s.buildingsVersion !== this.lastBuildingsVersion) {
+      this.lastBuildingsVersion = s.buildingsVersion;
+      this.syncBuildingNodes(s.buildings);
     }
-    this.applyProgress(s.buildings);
+    if (s.failedAttemptsVersion !== this.lastFailedVersion) {
+      this.lastFailedVersion = s.failedAttemptsVersion;
+      this.syncFailedNodes(s.failedAttempts);
+    }
+    this.applyConfirmedAnimation(s.buildings, s.simTime);
+    this.applyFailedAnimation(s.failedAttempts, s.simTime);
 
     const hoverId = s.bulldozeHover?.kind === 'building' ? s.bulldozeHover.id : null;
     if (hoverId !== this.lastHover) {
@@ -62,43 +58,120 @@ export class BuildingsLayer {
     }
   }
 
-  private syncParticles(buildings: Building[]): void {
+  private syncBuildingNodes(buildings: Building[]): void {
     const live = new Set<BuildingId>();
     for (const b of buildings) live.add(b.id);
 
-    for (const [id, node] of this.nodes) {
+    for (const [id, node] of this.buildingNodes) {
       if (live.has(id)) continue;
-      this.particles.removeParticle(node.particle);
-      this.nodes.delete(id);
+      this.base.removeChild(node.cont);
+      node.cont.destroy({ children: true });
+      this.buildingNodes.delete(id);
     }
 
     for (const b of buildings) {
-      if (this.nodes.has(b.id)) continue;
-      const tex = this.textures[b.type];
-      const p = new Particle({
-        texture: tex,
-        x: b.cx,
-        y: b.cy,
-        scaleX: b.w / TEXTURE_SIZE,
-        scaleY: b.h / TEXTURE_SIZE,
-        rotation: b.rot,
-        anchorX: 0.5,
-        anchorY: 0.5,
-        tint: GHOST_TINT,
-        alpha: 0.3,
-      });
-      this.particles.addParticle(p);
-      this.nodes.set(b.id, { particle: p });
+      if (this.buildingNodes.has(b.id)) continue;
+      const fillColor = BUILDING_COLORS[b.type];
+      const strokeColor = darken(fillColor, 0.55);
+      this.buildingNodes.set(
+        b.id,
+        this.makeNode(b.poly, b.centroid, strokeColor, fillColor, true),
+      );
     }
   }
 
-  private applyProgress(buildings: Building[]): void {
+  private syncFailedNodes(failed: FailedAttempt[]): void {
+    const live = new Set<FailedAttemptId>();
+    for (const f of failed) live.add(f.id);
+
+    for (const [id, node] of this.failedNodes) {
+      if (live.has(id)) continue;
+      this.base.removeChild(node.cont);
+      node.cont.destroy({ children: true });
+      this.failedNodes.delete(id);
+    }
+
+    for (const f of failed) {
+      if (this.failedNodes.has(f.id)) continue;
+      this.failedNodes.set(
+        f.id,
+        this.makeNode(f.poly, f.centroid, FAIL_COLOR, FAIL_COLOR, false),
+      );
+    }
+  }
+
+  private makeNode(
+    poly: number[],
+    centroid: { x: number; y: number },
+    strokeColor: number,
+    fillColor: number,
+    bakeFill: boolean,
+  ): Node {
+    const localPoly = makeLocalPoly(poly, centroid);
+    const fill = new Graphics();
+    if (bakeFill) {
+      fill.poly(localPoly).fill({ color: fillColor, alpha: 1 });
+    }
+    fill.alpha = 0;
+
+    const stroke = new Graphics();
+    const cont = new Container();
+    cont.position.set(centroid.x, centroid.y);
+    cont.addChild(fill);
+    cont.addChild(stroke);
+    this.base.addChild(cont);
+
+    const numEdges = poly.length / 2;
+    return {
+      cont,
+      fill,
+      stroke,
+      localPoly,
+      strokeColor,
+      numEdges,
+      perimeterDuration: numEdges * EDGE_DURATION,
+      done: false,
+    };
+  }
+
+  private applyConfirmedAnimation(buildings: Building[], simTime: number): void {
     for (const b of buildings) {
-      const node = this.nodes.get(b.id);
+      const node = this.buildingNodes.get(b.id);
+      if (!node || node.done) continue;
+      const ageSec = simTime - b.spawnedAt;
+      const total = node.perimeterDuration + FILL_DURATION;
+
+      if (ageSec >= total) {
+        drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
+        node.fill.alpha = 1;
+        node.done = true;
+        continue;
+      }
+      if (ageSec < node.perimeterDuration) {
+        drawPartialStroke(node.stroke, node.localPoly, ageSec / EDGE_DURATION, node.strokeColor);
+        node.fill.alpha = 0;
+      } else {
+        drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
+        const t = (ageSec - node.perimeterDuration) / FILL_DURATION;
+        node.fill.alpha = t < 0 ? 0 : t > 1 ? 1 : t;
+      }
+    }
+  }
+
+  private applyFailedAnimation(failed: FailedAttempt[], simTime: number): void {
+    // Failed attempts: same perimeter animation in red, no fill, then hold
+    // until the store prunes them.
+    for (const f of failed) {
+      const node = this.failedNodes.get(f.id);
       if (!node) continue;
-      const p = b.progress;
-      node.particle.tint = lerpColor(GHOST_TINT, BUILDING_COLORS[b.type], p);
-      node.particle.alpha = 0.3 + 0.7 * p;
+      const ageSec = simTime - f.spawnedAt;
+      if (ageSec < node.perimeterDuration) {
+        drawPartialStroke(node.stroke, node.localPoly, ageSec / EDGE_DURATION, node.strokeColor);
+      } else if (!node.done) {
+        drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
+        node.done = true;
+      }
+      node.fill.alpha = 0;
     }
   }
 
@@ -108,19 +181,62 @@ export class BuildingsLayer {
     if (bulldozeHover?.kind !== 'building') return;
     const b = buildings.find((x) => x.id === bulldozeHover.id);
     if (!b) return;
-    this.hover.poly(obbCorners(b)).fill({ color: BULLDOZE, alpha: 0.5 });
+    this.hover.poly(b.poly).fill({ color: BULLDOZE, alpha: 0.5 });
   }
 }
 
-function lerpColor(a: number, b: number, t: number): number {
-  const ar = (a >> 16) & 0xff;
-  const ag = (a >> 8) & 0xff;
-  const ab = a & 0xff;
-  const br = (b >> 16) & 0xff;
-  const bg = (b >> 8) & 0xff;
-  const bb = b & 0xff;
-  const r = (ar + (br - ar) * t) | 0;
-  const g = (ag + (bg - ag) * t) | 0;
-  const bl = (ab + (bb - ab) * t) | 0;
-  return (r << 16) | (g << 8) | bl;
+function makeLocalPoly(poly: number[], centroid: { x: number; y: number }): number[] {
+  const out = new Array(poly.length);
+  for (let i = 0; i < poly.length; i += 2) {
+    out[i] = poly[i] - centroid.x;
+    out[i + 1] = poly[i + 1] - centroid.y;
+  }
+  return out;
+}
+
+function drawFullStroke(g: Graphics, localPoly: number[], color: number): void {
+  g.clear();
+  g.poly(localPoly).stroke({ width: STROKE_WIDTH, color, alpha: 1 });
+}
+
+function drawPartialStroke(
+  g: Graphics,
+  localPoly: number[],
+  edgeProgress: number,
+  color: number,
+): void {
+  g.clear();
+  const n = localPoly.length / 2;
+  if (n < 2) return;
+
+  const completed = Math.min(n, Math.floor(edgeProgress));
+  const partial = edgeProgress - completed;
+
+  g.moveTo(localPoly[0], localPoly[1]);
+  for (let i = 0; i < completed && i < n; i++) {
+    const j = (i + 1) % n;
+    g.lineTo(localPoly[2 * j], localPoly[2 * j + 1]);
+  }
+  if (completed < n && partial > 0) {
+    const i = completed;
+    const j = (i + 1) % n;
+    const x0 = localPoly[2 * i];
+    const y0 = localPoly[2 * i + 1];
+    const x1 = localPoly[2 * j];
+    const y1 = localPoly[2 * j + 1];
+    g.lineTo(x0 + (x1 - x0) * partial, y0 + (y1 - y0) * partial);
+  }
+  g.stroke({ width: STROKE_WIDTH, color, alpha: 1 });
+
+  const placedCount = Math.min(n, completed + 1);
+  for (let i = 0; i < placedCount; i++) {
+    g.circle(localPoly[2 * i], localPoly[2 * i + 1], DOT_RADIUS).fill({ color, alpha: 1 });
+  }
+}
+
+function darken(color: number, factor: number): number {
+  const r = Math.floor(((color >> 16) & 0xff) * factor);
+  const g = Math.floor(((color >> 8) & 0xff) * factor);
+  const b = Math.floor((color & 0xff) * factor);
+  return (r << 16) | (g << 8) | b;
 }

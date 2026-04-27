@@ -1,58 +1,71 @@
 export type BuildingId = number;
+export type FailedAttemptId = number;
 export type BuildingType = 'small_house' | 'shop' | 'warehouse';
+
+export interface BuildingAabb {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
 
 export interface Building {
   id: BuildingId;
   type: BuildingType;
-  cx: number;
-  cy: number;
-  // Footprint dimensions: w along its local x-axis (along-edge), h along local y (depth from edge).
-  w: number;
-  h: number;
-  rot: number;
-  // 0..1; Stage 3 will lerp this from 0 to 1 over `developMs`. v0 spawns fully built.
-  progress: number;
+  // Closed polygon in WORLD coords as a flat list [x0,y0,x1,y1,...].
+  // Vertices are CCW-ish (dictated by the spawn algorithm); the renderer treats
+  // them as a closed loop, the last vertex implicitly connects back to the first.
+  poly: number[];
+  centroid: { x: number; y: number };
+  aabb: BuildingAabb;
+  // Sim seconds at spawn. Drives the construction animation in BuildingsLayer.
   spawnedAt: number;
 }
 
-// One unit = 8 m. Sizes below are in (along-edge units, depth units).
-export const UNIT = 16;
+// A spawn attempt that didn't pass validation. Rendered as a red ghost outline
+// using the same construction animation as a real building, then auto-pruned.
+// Useful for diagnosing why the spawner is rejecting candidates.
+export interface FailedAttempt {
+  id: FailedAttemptId;
+  poly: number[];
+  centroid: { x: number; y: number };
+  aabb: BuildingAabb;
+  spawnedAt: number;
+  reason: string;
+}
 
 export interface BuildingTypeDef {
   type: BuildingType;
   weight: number;
-  // Largest first; spawner shrinks until it fits.
-  sizes: ReadonlyArray<readonly [number, number]>;
   color: number;
+  // Preferred area. Spawner picks the largest size first; on rejection, retries
+  // with a smaller targetArea (see SHRINK_FACTORS in spawn.ts).
+  targetArea: number;
+  // Acceptable frontage range (meters) along the road tangent.
+  frontRange: [number, number];
 }
 
 export const BUILDING_TYPES: ReadonlyArray<BuildingTypeDef> = [
   {
     type: 'small_house',
     weight: 0.55,
-    sizes: [
-      [2, 1],
-      [1, 1],
-    ],
     color: 0xc8956a,
+    targetArea: 280,
+    frontRange: [14, 22],
   },
   {
     type: 'shop',
     weight: 0.3,
-    sizes: [
-      [3, 2],
-      [2, 2],
-    ],
     color: 0x6c97c4,
+    targetArea: 800,
+    frontRange: [24, 36],
   },
   {
     type: 'warehouse',
     weight: 0.15,
-    sizes: [
-      [4, 4],
-      [3, 3],
-    ],
     color: 0x848c95,
+    targetArea: 1800,
+    frontRange: [36, 54],
   },
 ];
 
@@ -62,92 +75,72 @@ export const BUILDING_COLORS: Record<BuildingType, number> = (() => {
   return m as Record<BuildingType, number>;
 })();
 
-// ----- OBB helpers -----
+// ---------- polygon helpers ----------
 
-export interface Obb {
-  cx: number;
-  cy: number;
-  w: number;
-  h: number;
-  rot: number;
+export function polyArea(poly: number[]): number {
+  let s = 0;
+  const n = poly.length / 2;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    s += poly[2 * i] * poly[2 * j + 1] - poly[2 * j] * poly[2 * i + 1];
+  }
+  return Math.abs(s) * 0.5;
 }
 
-// Returns [x0,y0, x1,y1, x2,y2, x3,y3] in CCW order.
-export function obbCorners(b: Obb): number[] {
-  const c = Math.cos(b.rot);
-  const s = Math.sin(b.rot);
-  const hw = b.w / 2;
-  const hh = b.h / 2;
-  return [
-    b.cx + -hw * c - -hh * s,
-    b.cy + -hw * s + -hh * c,
-    b.cx + hw * c - -hh * s,
-    b.cy + hw * s + -hh * c,
-    b.cx + hw * c - hh * s,
-    b.cy + hw * s + hh * c,
-    b.cx + -hw * c - hh * s,
-    b.cy + -hw * s + hh * c,
-  ];
+export function polyCentroid(poly: number[]): { x: number; y: number } {
+  let cx = 0;
+  let cy = 0;
+  let signedArea2 = 0;
+  const n = poly.length / 2;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const x0 = poly[2 * i];
+    const y0 = poly[2 * i + 1];
+    const x1 = poly[2 * j];
+    const y1 = poly[2 * j + 1];
+    const cross = x0 * y1 - x1 * y0;
+    cx += (x0 + x1) * cross;
+    cy += (y0 + y1) * cross;
+    signedArea2 += cross;
+  }
+  if (Math.abs(signedArea2) < 1e-9) return { x: poly[0], y: poly[1] };
+  const inv = 1 / (3 * signedArea2);
+  return { x: cx * inv, y: cy * inv };
 }
 
-export function obbAabb(b: Obb): { minX: number; minY: number; maxX: number; maxY: number } {
-  const cs = obbCorners(b);
+export function polyAabb(poly: number[]): BuildingAabb {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (let i = 0; i < 8; i += 2) {
-    if (cs[i] < minX) minX = cs[i];
-    if (cs[i] > maxX) maxX = cs[i];
-    if (cs[i + 1] < minY) minY = cs[i + 1];
-    if (cs[i + 1] > maxY) maxY = cs[i + 1];
+  for (let i = 0; i < poly.length; i += 2) {
+    const x = poly[i];
+    const y = poly[i + 1];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
   }
   return { minX, minY, maxX, maxY };
 }
 
-// SAT overlap of two OBBs. Includes a fast AABB reject.
-export function obbOverlap(a: Obb, b: Obb): boolean {
-  const aA = obbAabb(a);
-  const aB = obbAabb(b);
-  if (aA.maxX < aB.minX || aB.maxX < aA.minX) return false;
-  if (aA.maxY < aB.minY || aB.maxY < aA.minY) return false;
-
-  const ca = obbCorners(a);
-  const cb = obbCorners(b);
-  const ax = Math.cos(a.rot);
-  const ay = Math.sin(a.rot);
-  const bx = Math.cos(b.rot);
-  const by = Math.sin(b.rot);
-  const axes: ReadonlyArray<readonly [number, number]> = [
-    [ax, ay],
-    [-ay, ax],
-    [bx, by],
-    [-by, bx],
-  ];
-  for (const ax2 of axes) {
-    let aMin = Infinity;
-    let aMax = -Infinity;
-    let bMin = Infinity;
-    let bMax = -Infinity;
-    for (let i = 0; i < 8; i += 2) {
-      const pa = ca[i] * ax2[0] + ca[i + 1] * ax2[1];
-      const pb = cb[i] * ax2[0] + cb[i + 1] * ax2[1];
-      if (pa < aMin) aMin = pa;
-      if (pa > aMax) aMax = pa;
-      if (pb < bMin) bMin = pb;
-      if (pb > bMax) bMax = pb;
-    }
-    if (aMax < bMin || bMax < aMin) return false;
-  }
-  return true;
+export function aabbContainsPoint(a: BuildingAabb, x: number, y: number): boolean {
+  return x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY;
 }
 
-export function obbContainsPoint(b: Obb, x: number, y: number): boolean {
-  const dx = x - b.cx;
-  const dy = y - b.cy;
-  const c = Math.cos(-b.rot);
-  const s = Math.sin(-b.rot);
-  const lx = dx * c - dy * s;
-  const ly = dx * s + dy * c;
-  return Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2;
+export function pointInPoly(poly: number[], x: number, y: number): boolean {
+  // Even-odd ray-cast. Robust to concave polygons and self-touching boundaries
+  // we won't be producing here.
+  let inside = false;
+  const n = poly.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = poly[2 * i];
+    const yi = poly[2 * i + 1];
+    const xj = poly[2 * j];
+    const yj = poly[2 * j + 1];
+    const intersect =
+      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }

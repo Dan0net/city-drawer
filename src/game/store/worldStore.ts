@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
-import type { Building, BuildingId } from '@game/buildings';
-import { obbContainsPoint } from '@game/buildings';
+import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
+import { aabbContainsPoint, pointInPoly } from '@game/buildings';
 import { trySpawn } from '@game/spawn';
 
 export type Tool = 'none' | 'road' | 'path' | 'bulldoze';
@@ -22,6 +22,8 @@ export interface WorldState {
   graphVersion: number;
   buildings: Building[];
   buildingsVersion: number;
+  failedAttempts: FailedAttempt[];
+  failedAttemptsVersion: number;
   tool: Tool;
   drawingStart: SnapResult | null;
   pointerWorld: { x: number; y: number } | null;
@@ -43,8 +45,6 @@ export interface WorldState {
   togglePause(): void;
 }
 
-export const DEVELOP_SECONDS = 30;
-
 const snapToAnchor = (s: SnapResult): Anchor => {
   if (s.kind === 'node') return { kind: 'node', nodeId: s.nodeId };
   if (s.kind === 'edge') return { kind: 'split', edgeId: s.edgeId, t: s.t };
@@ -60,20 +60,27 @@ const computeSnap = (graph: Graph, x: number, y: number, radius: number): SnapRe
 };
 
 const buildingAtPoint = (buildings: Building[], x: number, y: number): Building | null => {
-  // Topmost first (last drawn) so click prefers the most recently spawned overlap edge case.
   for (let i = buildings.length - 1; i >= 0; i--) {
-    if (obbContainsPoint(buildings[i], x, y)) return buildings[i];
+    const b = buildings[i];
+    if (!aabbContainsPoint(b.aabb, x, y)) continue;
+    if (pointInPoly(b.poly, x, y)) return b;
   }
   return null;
 };
 
-const SPAWN_INTERVAL_MIN = 2.0; // seconds
-const SPAWN_INTERVAL_MAX = 3.0;
+const SPAWN_INTERVAL_MIN = 0.4; // seconds
+const SPAWN_INTERVAL_MAX = 0.8;
+// Animation timings here mirror the renderer; we only need them so we know when
+// a failed-attempt visual is finished and can be pruned.
+const EDGE_DURATION_S = 0.2;
+const FAILED_HOLD_AFTER_PERIMETER_S = 1.2;
 
 export const useWorldStore = create<WorldState>((set, get) => {
   const graph = new Graph();
   const buildings: Building[] = [];
+  const failedAttempts: FailedAttempt[] = [];
   let nextBuildingId = 1;
+  let nextFailedId = 1;
   let nextSpawnAt = SPAWN_INTERVAL_MIN + Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
 
   return {
@@ -81,6 +88,8 @@ export const useWorldStore = create<WorldState>((set, get) => {
     graphVersion: 0,
     buildings,
     buildingsVersion: 0,
+    failedAttempts,
+    failedAttemptsVersion: 0,
     tool: 'none',
     drawingStart: null,
     pointerWorld: null,
@@ -177,19 +186,26 @@ export const useWorldStore = create<WorldState>((set, get) => {
     },
 
     clearBuildings: () => {
-      const { buildings: bs } = get();
-      if (bs.length === 0) return;
+      const { buildings: bs, failedAttempts: fa } = get();
+      if (bs.length === 0 && fa.length === 0) return;
       bs.length = 0;
-      set({ buildingsVersion: get().buildingsVersion + 1, bulldozeHover: null });
+      fa.length = 0;
+      set({
+        buildingsVersion: get().buildingsVersion + 1,
+        failedAttemptsVersion: get().failedAttemptsVersion + 1,
+        bulldozeHover: null,
+      });
     },
 
     clearAll: () => {
-      const { graph: g, buildings: bs } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa } = get();
       g.clear();
       bs.length = 0;
+      fa.length = 0;
       set({
         graphVersion: g.version,
         buildingsVersion: get().buildingsVersion + 1,
+        failedAttemptsVersion: get().failedAttemptsVersion + 1,
         drawingStart: null,
         bulldozeHover: null,
       });
@@ -198,27 +214,23 @@ export const useWorldStore = create<WorldState>((set, get) => {
     simStep: (dt) => {
       const s = get();
       if (s.paused) return;
-
       const newSimTime = s.simTime + dt;
 
-      // Advance progress on developing buildings (mutate in place — render polls).
-      for (const b of s.buildings) {
-        if (b.progress < 1) {
-          b.progress = Math.min(1, b.progress + dt / DEVELOP_SECONDS);
-        }
-      }
-
-      // Spawn attempt
       let bumpBuildings = false;
+      let bumpFailed = false;
+
       if (newSimTime >= nextSpawnAt) {
-        const placed = trySpawn(
+        const result = trySpawn(
           { graph: s.graph, buildings: s.buildings },
           newSimTime,
           Math.random,
         );
-        if (placed) {
-          s.buildings.push({ ...placed, id: nextBuildingId++ });
+        if (result?.kind === 'success') {
+          s.buildings.push({ ...result.building, id: nextBuildingId++ });
           bumpBuildings = true;
+        } else if (result?.kind === 'failure') {
+          s.failedAttempts.push({ ...result.failure, id: nextFailedId++ });
+          bumpFailed = true;
         }
         nextSpawnAt =
           newSimTime +
@@ -226,13 +238,22 @@ export const useWorldStore = create<WorldState>((set, get) => {
           Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
       }
 
-      // simTime always advances (when not paused). buildingsVersion bumps only on
-      // add/remove — progress changes are read directly each frame by the renderer.
-      if (bumpBuildings) {
-        set({ simTime: newSimTime, buildingsVersion: s.buildingsVersion + 1 });
-      } else {
-        set({ simTime: newSimTime });
+      // Prune failed attempts whose visualization has run its course.
+      // Lifetime = perimeter animation (numEdges * EDGE_DURATION) + a hold beat.
+      const fa = s.failedAttempts;
+      while (fa.length > 0) {
+        const att = fa[0];
+        const lifetime =
+          (att.poly.length / 2) * EDGE_DURATION_S + FAILED_HOLD_AFTER_PERIMETER_S;
+        if (newSimTime - att.spawnedAt < lifetime) break;
+        fa.shift();
+        bumpFailed = true;
       }
+
+      const patch: Partial<WorldState> = { simTime: newSimTime };
+      if (bumpBuildings) patch.buildingsVersion = s.buildingsVersion + 1;
+      if (bumpFailed) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
+      set(patch);
     },
 
     togglePause: () => set((s) => ({ paused: !s.paused })),
