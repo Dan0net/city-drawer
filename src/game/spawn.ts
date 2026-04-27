@@ -20,6 +20,9 @@ const MIN_AREA_RATIO = 0.5;
 const RAY_ORIGIN_EPSILON = 0.01;
 // Same anchor, smaller targetArea on retry — accepts a smaller building rather than rejecting.
 const SHRINK_FACTORS = [1, 0.6];
+// Leftover frontage smaller than this gets absorbed into the building rather
+// than left as an unusable sliver.
+const SLIVER_GAP = 5;
 
 // Placeholder polygon for failures that didn't reach polygon construction.
 const PLACEHOLDER_W = 5;
@@ -100,6 +103,36 @@ export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
   return null;
 }
 
+// Choose front-edge width W and start offset within an interval of world
+// length L, so leftover on each side is either 0 or > SLIVER_GAP. Returns
+// null when L can't host even the smallest front (frontMin).
+function pickFrontLayout(
+  L: number,
+  frontMin: number,
+  frontMax: number,
+  rand: Rng,
+): { width: number; start: number } | null {
+  if (L < frontMin) return null;
+  // Whole interval fits within frontMax + sliver tolerance: take all of it
+  // (W may slightly exceed frontMax; that's the absorption rule).
+  if (L < frontMax + SLIVER_GAP) {
+    return { width: L, start: 0 };
+  }
+  // L ≥ frontMax + SLIVER_GAP — must leave real frontage somewhere.
+  const flushMaxW = Math.min(frontMax, L - SLIVER_GAP);
+  const midMaxW = Math.min(frontMax, L - 2 * SLIVER_GAP);
+  const opts: ('low' | 'high' | 'mid')[] = ['low', 'high'];
+  if (midMaxW >= frontMin) opts.push('mid');
+  const opt = opts[Math.floor(rand() * opts.length)];
+  if (opt === 'mid') {
+    const W = frontMin + rand() * (midMaxW - frontMin);
+    const start = SLIVER_GAP + rand() * (L - W - 2 * SLIVER_GAP);
+    return { width: W, start };
+  }
+  const W = frontMin + rand() * (flushMaxW - frontMin);
+  return { width: W, start: opt === 'low' ? 0 : L - W };
+}
+
 // ---------- entry point ----------
 
 export function trySpawn(
@@ -131,11 +164,6 @@ export function trySpawn(
 
   const tx = dx / len;
   const ty = dy / len;
-  // Inset 10% from interval ends so anchors aren't right against an
-  // already-occupied neighbor or a node corner.
-  const t = ivT0 + (0.1 + rand() * 0.8) * span;
-  const anchorX = from.x + dx * t;
-  const anchorY = from.y + dy * t;
   const sideSign: 1 | -1 = pickSide === 'left' ? 1 : -1;
   const nx = -ty * sideSign;
   const ny = tx * sideSign;
@@ -147,10 +175,33 @@ export function trySpawn(
   const typeDef = BUILDING_TYPES.find((td) => td.type === typeName)!;
   const [frontMin, frontMax] = typeDef.frontRange;
 
-  const distToStart = (t - ivT0) * len;
-  const distToEnd = (ivT1 - t) * len;
-  const xCapNeg = -Math.min(frontMax / 2, distToStart - 1);
-  const xCapPos = Math.min(frontMax / 2, distToEnd - 1);
+  // Wise front-edge selection: choose width and start offset within the
+  // interval so any leftover is either zero or > SLIVER_GAP.
+  const layout = pickFrontLayout(intervalWorld, frontMin, frontMax, rand);
+  const fallbackT = ivT0 + 0.5 * span;
+  const fallbackX = from.x + dx * fallbackT;
+  const fallbackY = from.y + dy * fallbackT;
+  if (!layout) {
+    console.log('[spawn] fail: frontage_too_short', {
+      edgeId: edge.id,
+      type: typeName,
+      available: intervalWorld,
+      frontMin,
+    });
+    return {
+      kind: 'failure',
+      failure: makePlaceholder(
+        fallbackX, fallbackY, tx, ty, nx, ny, clearance, simTime, 'frontage_too_short',
+      ),
+    };
+  }
+
+  const W = layout.width;
+  const t = ivT0 + (layout.start + W / 2) / len;
+  const anchorX = from.x + dx * t;
+  const anchorY = from.y + dy * t;
+  const xCapNeg = -W / 2;
+  const xCapPos = W / 2;
 
   const fail = (reason: string, details?: Record<string, unknown>): SpawnResult => {
     console.log(`[spawn] fail: ${reason}`, {
@@ -165,17 +216,16 @@ export function trySpawn(
     };
   };
 
-  if (xCapPos - xCapNeg < frontMin) {
-    return fail('frontage_too_short', {
-      available: xCapPos - xCapNeg,
-      frontMin,
-    });
-  }
-
   const xs: number[] = [];
   const depths: number[] = [];
   const rayOffset = clearance + RAY_ORIGIN_EPSILON;
-  for (let x = xCapNeg; x <= xCapPos + 1e-6; x += SLICE_STEP) {
+  // Evenly distribute slices so xs[0] === xCapNeg and xs[last] === xCapPos
+  // exactly. A fixed integer step would leave the high end short by the
+  // fractional part of W and produce sub-meter slivers between buildings.
+  const numSteps = Math.max(1, Math.round((xCapPos - xCapNeg) / SLICE_STEP));
+  const step = (xCapPos - xCapNeg) / numSteps;
+  for (let i = 0; i <= numSteps; i++) {
+    const x = xCapNeg + i * step;
     xs.push(x);
     const ox = anchorX + tx * x + nx * rayOffset;
     const oy = anchorY + ty * x + ny * rayOffset;
@@ -221,13 +271,10 @@ export function trySpawn(
     return fail('usable_width_too_small', { usableWidth, frontMin });
   }
 
-  const halfMax = frontMax / 2;
-  let useLeft = leftIdx;
-  let useRight = rightIdx;
-  if (usableWidth > frontMax) {
-    while (xs[centerIdx] - xs[useLeft] > halfMax) useLeft++;
-    while (xs[useRight] - xs[centerIdx] > halfMax) useRight--;
-  }
+  // Wise picking already chose W ≤ frontMax + SLIVER_GAP, so no further
+  // width-trim — that would re-create the sliver we deliberately absorbed.
+  const useLeft = leftIdx;
+  const useRight = rightIdx;
   const finalWidth = xs[useRight] - xs[useLeft];
   if (finalWidth < frontMin) return fail('final_width_too_small', { finalWidth, frontMin });
 
