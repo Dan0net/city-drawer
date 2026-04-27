@@ -8,7 +8,9 @@ const baseBtn: CSSProperties = {
   padding: '6px 10px',
   background: '#1a212d',
   color: '#d8dde6',
-  border: '1px solid #2a3445',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#2a3445',
   borderRadius: 4,
   cursor: 'pointer',
   fontSize: 12,
@@ -48,6 +50,9 @@ export function Toolbar() {
   const toggleGrid = useUiStore((s) => s.toggleGrid);
   const reset = useCameraStore((s) => s.reset);
   const clearAll = useWorldStore((s) => s.clearAll);
+  const clearBuildings = useWorldStore((s) => s.clearBuildings);
+  const paused = useWorldStore((s) => s.paused);
+  const togglePause = useWorldStore((s) => s.togglePause);
 
   return (
     <div
@@ -68,6 +73,13 @@ export function Toolbar() {
       <ToolButton tool="path" label="Path" hotkey="2" />
       <ToolButton tool="bulldoze" label="Bulldoze" hotkey="B" />
       <div style={{ width: 1, background: '#2a3445', margin: '0 2px' }} />
+      <button
+        style={paused ? activeBtn : baseBtn}
+        onClick={() => togglePause()}
+        title="Pause / resume sim (P)"
+      >
+        {paused ? 'Paused' : 'Pause'}
+      </button>
       <button style={baseBtn} onClick={() => reset()} title="Reset camera (R)">
         Reset
       </button>
@@ -78,8 +90,15 @@ export function Toolbar() {
       >
         Grid
       </button>
-      <button style={baseBtn} onClick={() => clearAll()} title="Clear all roads & paths">
-        Clear
+      <button
+        style={baseBtn}
+        onClick={() => clearBuildings()}
+        title="Demolish every building, keep roads & paths"
+      >
+        Clear bldgs
+      </button>
+      <button style={baseBtn} onClick={() => clearAll()} title="Clear roads, paths, and buildings">
+        Clear all
       </button>
     </div>
   );

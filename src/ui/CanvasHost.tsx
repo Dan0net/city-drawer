@@ -4,6 +4,8 @@ import { Viewport } from '@render/pixi/Viewport';
 import { DebugGridLayer } from '@render/layers/DebugGridLayer';
 import { EdgesLayer } from '@render/layers/EdgesLayer';
 import { GhostLayer } from '@render/layers/GhostLayer';
+import { BuildingsLayer } from '@render/layers/BuildingsLayer';
+import { createTickLoop } from '@game/core/tickLoop';
 import { useCameraStore } from '@game/store/cameraStore';
 import { useUiStore } from '@game/store/uiStore';
 import { useWorldStore } from '@game/store/worldStore';
@@ -36,9 +38,11 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
 
       const viewport = new Viewport(canvas, handle.world);
       const grid = new DebugGridLayer(viewport);
+      const buildings = new BuildingsLayer(handle.app);
       const edges = new EdgesLayer();
       const ghost = new GhostLayer();
       handle.world.addChild(grid.container);
+      handle.world.addChild(buildings.container);
       handle.world.addChild(edges.container);
       handle.world.addChild(ghost.container);
 
@@ -167,6 +171,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         else if (k === '2') useWorldStore.getState().toggleTool('path');
         else if (k === '0') useWorldStore.getState().setTool('none');
         else if (k === 'b') useWorldStore.getState().toggleTool('bulldoze');
+        else if (k === 'p') useWorldStore.getState().togglePause();
         else if (k === 'escape') useWorldStore.getState().cancelDraw();
       };
       const onKeyUp = (e: KeyboardEvent) => {
@@ -185,12 +190,20 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       window.addEventListener('keydown', onKeyDown);
       window.addEventListener('keyup', onKeyUp);
 
+      // ---------- sim tick (progress + spawner) ----------
+      const simLoop = createTickLoop({ hz: 30 });
+      simLoop.subscribe((dt) => {
+        useWorldStore.getState().simStep(dt);
+      });
+      simLoop.start();
+
       // ---------- per-frame ----------
       let fpsAcc = 0;
       let fpsFrames = 0;
       let lastFpsEmit = performance.now();
       const tick = () => {
         grid.update();
+        buildings.update();
         edges.update();
         ghost.update();
 
@@ -220,6 +233,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('keyup', onKeyUp);
         handle.app.ticker.remove(tick);
+        simLoop.stop();
         viewport.destroy();
         handle.destroy();
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);

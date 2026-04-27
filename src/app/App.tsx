@@ -26,7 +26,7 @@ export function App() {
           lineHeight: 1.6,
         }}
       >
-        1 road · 2 path · B bulldoze · 0 deselect · click+drag = pan when no tool · space/middle = pan always · wheel zoom · R reset · G grid · ` fps · Esc cancel draw
+        1 road · 2 path · B bulldoze · 0 deselect · P pause · click+drag = pan when no tool · space/middle = pan always · wheel zoom · R reset · G grid · ` fps · Esc cancel draw
       </div>
     </div>
   );
