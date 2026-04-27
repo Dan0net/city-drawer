@@ -299,8 +299,18 @@ export function trySpawn(
     if (!built) continue;
     lastBuilt = built;
     if (built.area >= targetArea * MIN_AREA_RATIO) {
-      const consumedT0 = Math.max(0, t + xs[useLeft] / len);
-      const consumedT1 = Math.min(1, t + xs[useRight] / len);
+      // When the building reaches a layout boundary (no depth trim), use the
+      // boundary's direct formula so adjacent buildings' consumed ranges
+      // bit-match — otherwise FP drift between the xs-based path and the
+      // stored interval boundary leaves a sub-meter residual sliver.
+      const consumedT0 =
+        useLeft === 0
+          ? Math.max(0, ivT0 + layout.start / len)
+          : Math.max(0, t + xs[useLeft] / len);
+      const consumedT1 =
+        useRight === xs.length - 1
+          ? Math.min(1, ivT0 + (layout.start + W) / len)
+          : Math.min(1, t + xs[useRight] / len);
       return {
         kind: 'success',
         building: {
