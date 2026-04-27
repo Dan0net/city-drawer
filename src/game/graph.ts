@@ -18,6 +18,19 @@ export interface GraphEdge {
   kind: EdgeKind;
 }
 
+export interface Interval {
+  t0: number;
+  t1: number;
+}
+
+// Free intervals on each side of an edge, in normalized [0..1] along from→to.
+// "left" = perpendicular (-ty, +tx), "right" = (+ty, -tx). Buildings consume
+// portions of these as they spawn (later step).
+export interface FrontageSides {
+  left: Interval[];
+  right: Interval[];
+}
+
 export type Anchor =
   | { kind: 'free'; x: number; y: number }
   | { kind: 'node'; nodeId: NodeId }
@@ -29,6 +42,7 @@ const cellKey = (cx: number, cy: number): string => `${cx},${cy}`;
 export class Graph {
   readonly nodes = new Map<NodeId, GraphNode>();
   readonly edges = new Map<EdgeId, GraphEdge>();
+  readonly frontages = new Map<EdgeId, FrontageSides>();
   // Bumped on every mutation. Renderer compares to last seen to know when to rebuild.
   version = 0;
 
@@ -63,6 +77,7 @@ export class Graph {
     const id = this.nextEdgeId++;
     const edge: GraphEdge = { id, from: aId, to: bId, kind };
     this.edges.set(id, edge);
+    this.frontages.set(id, fullFrontage());
     this.nodes.get(aId)!.edges.add(id);
     this.nodes.get(bId)!.edges.add(id);
     this.indexEdge(edge);
@@ -75,6 +90,7 @@ export class Graph {
     if (!edge) return false;
     this.unindexEdge(edge);
     this.edges.delete(id);
+    this.frontages.delete(id);
     const from = this.nodes.get(edge.from)!;
     const to = this.nodes.get(edge.to)!;
     from.edges.delete(id);
@@ -108,6 +124,7 @@ export class Graph {
   clear(): void {
     this.nodes.clear();
     this.edges.clear();
+    this.frontages.clear();
     this.edgeCells.clear();
     this.edgeGrid.clear();
     this.nodeGrid.clear();
@@ -216,6 +233,9 @@ export class Graph {
     const newId = this.addNode(x, y);
     const newNode = this.nodes.get(newId)!;
 
+    const parentFront = this.frontages.get(edgeId) ?? fullFrontage();
+    this.frontages.delete(edgeId);
+
     this.unindexEdge(edge);
     this.edges.delete(edgeId);
     from.edges.delete(edgeId);
@@ -227,6 +247,14 @@ export class Graph {
     const e2: GraphEdge = { id: e2Id, from: newId, to: edge.to, kind: edge.kind };
     this.edges.set(e1Id, e1);
     this.edges.set(e2Id, e2);
+    this.frontages.set(e1Id, {
+      left: mapIntervalsToChild(parentFront.left, 0, ts),
+      right: mapIntervalsToChild(parentFront.right, 0, ts),
+    });
+    this.frontages.set(e2Id, {
+      left: mapIntervalsToChild(parentFront.left, ts, 1),
+      right: mapIntervalsToChild(parentFront.right, ts, 1),
+    });
     from.edges.add(e1Id);
     newNode.edges.add(e1Id);
     newNode.edges.add(e2Id);
@@ -304,4 +332,22 @@ export class Graph {
     }
     return out;
   }
+}
+
+function fullFrontage(): FrontageSides {
+  return { left: [{ t0: 0, t1: 1 }], right: [{ t0: 0, t1: 1 }] };
+}
+
+// Maps parent intervals into a child whose param range covers parent [lo..hi],
+// rescaled to the child's own [0..1].
+function mapIntervalsToChild(parent: Interval[], lo: number, hi: number): Interval[] {
+  const span = hi - lo;
+  if (span <= 0) return [];
+  const out: Interval[] = [];
+  for (const iv of parent) {
+    const a = Math.max(iv.t0, lo);
+    const b = Math.min(iv.t1, hi);
+    if (b > a) out.push({ t0: (a - lo) / span, t1: (b - lo) / span });
+  }
+  return out;
 }
