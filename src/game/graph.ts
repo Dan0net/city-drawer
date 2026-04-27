@@ -85,6 +85,21 @@ export class Graph {
     return { edgeId: id, fromId: aId, toId: bId };
   }
 
+  // Mark a t-range on one side of an edge as consumed (e.g., a building was
+  // placed there). Splits any overlapping intervals around [t0, t1] and bumps
+  // the graph version so renderers rebuild.
+  consumeFrontage(id: EdgeId, side: 'left' | 'right', t0: number, t1: number): boolean {
+    const front = this.frontages.get(id);
+    if (!front) return false;
+    const lo = Math.max(0, Math.min(1, Math.min(t0, t1)));
+    const hi = Math.max(0, Math.min(1, Math.max(t0, t1)));
+    if (hi - lo < 1e-6) return false;
+    if (side === 'left') front.left = subtractInterval(front.left, lo, hi);
+    else front.right = subtractInterval(front.right, lo, hi);
+    this.version++;
+    return true;
+  }
+
   removeEdge(id: EdgeId): boolean {
     const edge = this.edges.get(id);
     if (!edge) return false;
@@ -336,6 +351,19 @@ export class Graph {
 
 function fullFrontage(): FrontageSides {
   return { left: [{ t0: 0, t1: 1 }], right: [{ t0: 0, t1: 1 }] };
+}
+
+function subtractInterval(intervals: Interval[], lo: number, hi: number): Interval[] {
+  const out: Interval[] = [];
+  for (const iv of intervals) {
+    if (iv.t1 <= lo || iv.t0 >= hi) {
+      out.push(iv);
+      continue;
+    }
+    if (iv.t0 < lo) out.push({ t0: iv.t0, t1: lo });
+    if (iv.t1 > hi) out.push({ t0: hi, t1: iv.t1 });
+  }
+  return out;
 }
 
 // Maps parent intervals into a child whose param range covers parent [lo..hi],

@@ -1,4 +1,4 @@
-import type { Graph, GraphEdge, EdgeKind } from './graph';
+import type { Graph, GraphEdge } from './graph';
 import type { Building, BuildingType, FailedAttempt } from './buildings';
 import {
   BUILDING_TYPES,
@@ -8,9 +8,7 @@ import {
   polyArea,
   polyCentroid,
 } from './buildings';
-
-const ROAD_HALF_WIDTH: Record<EdgeKind, number> = { road: 3, path: 1 };
-const EDGE_CLEARANCE = 0.5;
+import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, type Side } from './roadGeometry';
 const SLICE_STEP = 1;
 const MIN_DEPTH = 4;
 const MAX_DEPTH = 50;
@@ -34,8 +32,19 @@ export interface SpawnContext {
 
 export type Rng = () => number;
 
+export interface ConsumedFrontage {
+  edgeId: number;
+  side: Side;
+  t0: number;
+  t1: number;
+}
+
 export type SpawnResult =
-  | { kind: 'success'; building: Omit<Building, 'id'> }
+  | {
+      kind: 'success';
+      building: Omit<Building, 'id'>;
+      consumed: ConsumedFrontage;
+    }
   | { kind: 'failure'; failure: Omit<FailedAttempt, 'id'> };
 
 export function pickType(rand: Rng): BuildingType {
@@ -49,20 +58,44 @@ export function pickType(rand: Rng): BuildingType {
   return BUILDING_TYPES[0].type;
 }
 
-export function pickEdge(graph: Graph, rand: Rng): GraphEdge | null {
+export interface FrontagePick {
+  edge: GraphEdge;
+  side: Side;
+  t0: number;
+  t1: number;
+}
+
+// Picks an (edge, side, interval) weighted by the world-length of free
+// frontage. Edges with no remaining frontage on either side are skipped.
+export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
   let total = 0;
   for (const e of graph.edges.values()) {
+    const front = graph.frontages.get(e.id);
+    if (!front) continue;
     const a = graph.nodes.get(e.from)!;
     const b = graph.nodes.get(e.to)!;
-    total += Math.hypot(b.x - a.x, b.y - a.y);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-6) continue;
+    for (const iv of front.left) total += (iv.t1 - iv.t0) * len;
+    for (const iv of front.right) total += (iv.t1 - iv.t0) * len;
   }
-  if (total === 0) return null;
+  if (total <= 0) return null;
   let r = rand() * total;
   for (const e of graph.edges.values()) {
+    const front = graph.frontages.get(e.id);
+    if (!front) continue;
     const a = graph.nodes.get(e.from)!;
     const b = graph.nodes.get(e.to)!;
-    r -= Math.hypot(b.x - a.x, b.y - a.y);
-    if (r <= 0) return e;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-6) continue;
+    for (const iv of front.left) {
+      r -= (iv.t1 - iv.t0) * len;
+      if (r <= 0) return { edge: e, side: 'left', t0: iv.t0, t1: iv.t1 };
+    }
+    for (const iv of front.right) {
+      r -= (iv.t1 - iv.t0) * len;
+      if (r <= 0) return { edge: e, side: 'right', t0: iv.t0, t1: iv.t1 };
+    }
   }
   return null;
 }
@@ -74,30 +107,38 @@ export function trySpawn(
   simTime: number,
   rand: Rng,
 ): SpawnResult | null {
-  const edge = pickEdge(ctx.graph, rand);
-  if (!edge) {
-    console.log('[spawn] fail: no_edge');
+  const pick = pickFrontage(ctx.graph, rand);
+  if (!pick) {
+    console.log('[spawn] fail: no_frontage');
     return null;
   }
+  const { edge, side: pickSide, t0: ivT0, t1: ivT1 } = pick;
 
   const from = ctx.graph.nodes.get(edge.from)!;
   const to = ctx.graph.nodes.get(edge.to)!;
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const len = Math.hypot(dx, dy);
-  if (len < 12) {
-    console.log('[spawn] fail: edge_too_short', { len, edgeId: edge.id });
+  const span = ivT1 - ivT0;
+  const intervalWorld = span * len;
+  if (intervalWorld < 12) {
+    console.log('[spawn] fail: interval_too_short', {
+      intervalWorld,
+      edgeId: edge.id,
+    });
     return null;
   }
 
   const tx = dx / len;
   const ty = dy / len;
-  const t = 0.1 + rand() * 0.8;
+  // Inset 10% from interval ends so anchors aren't right against an
+  // already-occupied neighbor or a node corner.
+  const t = ivT0 + (0.1 + rand() * 0.8) * span;
   const anchorX = from.x + dx * t;
   const anchorY = from.y + dy * t;
-  const side: 1 | -1 = rand() < 0.5 ? 1 : -1;
-  const nx = -ty * side;
-  const ny = tx * side;
+  const sideSign: 1 | -1 = pickSide === 'left' ? 1 : -1;
+  const nx = -ty * sideSign;
+  const ny = tx * sideSign;
 
   const halfRoad = ROAD_HALF_WIDTH[edge.kind];
   const clearance = halfRoad + EDGE_CLEARANCE;
@@ -106,8 +147,8 @@ export function trySpawn(
   const typeDef = BUILDING_TYPES.find((td) => td.type === typeName)!;
   const [frontMin, frontMax] = typeDef.frontRange;
 
-  const distToStart = t * len;
-  const distToEnd = (1 - t) * len;
+  const distToStart = (t - ivT0) * len;
+  const distToEnd = (ivT1 - t) * len;
   const xCapNeg = -Math.min(frontMax / 2, distToStart - 1);
   const xCapPos = Math.min(frontMax / 2, distToEnd - 1);
 
@@ -211,6 +252,8 @@ export function trySpawn(
     if (!built) continue;
     lastBuilt = built;
     if (built.area >= targetArea * MIN_AREA_RATIO) {
+      const consumedT0 = Math.max(0, t + xs[useLeft] / len);
+      const consumedT1 = Math.min(1, t + xs[useRight] / len);
       return {
         kind: 'success',
         building: {
@@ -219,6 +262,12 @@ export function trySpawn(
           centroid: built.centroid,
           aabb: built.aabb,
           spawnedAt: simTime,
+        },
+        consumed: {
+          edgeId: edge.id,
+          side: pickSide,
+          t0: consumedT0,
+          t1: consumedT1,
         },
       };
     }

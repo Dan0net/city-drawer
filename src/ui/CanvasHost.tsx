@@ -5,6 +5,7 @@ import { DebugGridLayer } from '@render/layers/DebugGridLayer';
 import { EdgesLayer } from '@render/layers/EdgesLayer';
 import { GhostLayer } from '@render/layers/GhostLayer';
 import { BuildingsLayer } from '@render/layers/BuildingsLayer';
+import { AvailableFrontagesLayer } from '@render/layers/AvailableFrontagesLayer';
 import { createTickLoop } from '@game/core/tickLoop';
 import { useCameraStore } from '@game/store/cameraStore';
 import { useUiStore } from '@game/store/uiStore';
@@ -40,14 +41,20 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       const grid = new DebugGridLayer(viewport);
       const buildings = new BuildingsLayer();
       const edges = new EdgesLayer();
+      const frontages = new AvailableFrontagesLayer();
       const ghost = new GhostLayer();
       handle.world.addChild(grid.container);
       handle.world.addChild(buildings.container);
       handle.world.addChild(edges.container);
+      handle.world.addChild(frontages.container);
       handle.world.addChild(ghost.container);
 
       grid.setVisible(useUiStore.getState().showGrid);
-      const unsubGrid = useUiStore.subscribe((s) => grid.setVisible(s.showGrid));
+      frontages.setVisible(useUiStore.getState().showFrontages);
+      const unsubUi = useUiStore.subscribe((s) => {
+        grid.setVisible(s.showGrid);
+        frontages.setVisible(s.showFrontages);
+      });
 
       const resizeObserver = new ResizeObserver(() => viewport.onResize());
       resizeObserver.observe(container);
@@ -165,6 +172,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
         const k = e.key.toLowerCase();
         if (k === 'g') useUiStore.getState().toggleGrid();
+        else if (k === 'f') useUiStore.getState().toggleFrontages();
         else if (k === '`') useUiStore.getState().toggleFps();
         else if (k === 'r') useCameraStore.getState().reset();
         else if (k === '1') useWorldStore.getState().toggleTool('road');
@@ -205,6 +213,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         grid.update();
         buildings.update();
         edges.update();
+        frontages.update();
         ghost.update();
 
         fpsFrames += 1;
@@ -221,7 +230,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       handle.app.ticker.add(tick);
 
       cleanup = () => {
-        unsubGrid();
+        unsubUi();
         resizeObserver.disconnect();
         canvas.removeEventListener('pointerdown', onPointerDown);
         canvas.removeEventListener('pointermove', onPointerMove);

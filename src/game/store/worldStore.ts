@@ -218,6 +218,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
 
       let bumpBuildings = false;
       let bumpFailed = false;
+      let bumpGraph = false;
 
       if (newSimTime >= nextSpawnAt) {
         const result = trySpawn(
@@ -227,6 +228,10 @@ export const useWorldStore = create<WorldState>((set, get) => {
         );
         if (result?.kind === 'success') {
           s.buildings.push({ ...result.building, id: nextBuildingId++ });
+          const c = result.consumed;
+          if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
+            bumpGraph = true;
+          }
           bumpBuildings = true;
         } else if (result?.kind === 'failure') {
           s.failedAttempts.push({ ...result.failure, id: nextFailedId++ });
@@ -253,6 +258,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
       const patch: Partial<WorldState> = { simTime: newSimTime };
       if (bumpBuildings) patch.buildingsVersion = s.buildingsVersion + 1;
       if (bumpFailed) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
+      if (bumpGraph) patch.graphVersion = s.graph.version;
       set(patch);
     },
 

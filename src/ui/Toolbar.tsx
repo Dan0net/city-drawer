@@ -48,6 +48,8 @@ function ToolButton({
 export function Toolbar() {
   const showGrid = useUiStore((s) => s.showGrid);
   const toggleGrid = useUiStore((s) => s.toggleGrid);
+  const showFrontages = useUiStore((s) => s.showFrontages);
+  const toggleFrontages = useUiStore((s) => s.toggleFrontages);
   const reset = useCameraStore((s) => s.reset);
   const clearAll = useWorldStore((s) => s.clearAll);
   const clearBuildings = useWorldStore((s) => s.clearBuildings);
@@ -89,6 +91,13 @@ export function Toolbar() {
         title="Toggle grid (G)"
       >
         Grid
+      </button>
+      <button
+        style={showFrontages ? activeBtn : baseBtn}
+        onClick={() => toggleFrontages()}
+        title="Toggle available road frontages overlay (F)"
+      >
+        Frontages
       </button>
       <button
         style={baseBtn}
