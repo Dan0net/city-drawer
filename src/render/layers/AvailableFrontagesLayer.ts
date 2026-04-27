@@ -1,4 +1,5 @@
 import { Container, Graphics } from 'pixi.js';
+import { MIN_FRONTAGE_LENGTH } from '@game/buildings';
 import { useWorldStore } from '@game/store/worldStore';
 import {
   computeFrontageCorners,
@@ -63,6 +64,7 @@ export class AvailableFrontagesLayer {
         const toCorner = corners.get(cornerKey(e.id, side, 'to'));
         for (const iv of intervals) {
           if (iv.t1 <= iv.t0) continue;
+          if ((iv.t1 - iv.t0) * len < MIN_FRONTAGE_LENGTH) continue;
           const useFrom = iv.t0 === 0 && fromCorner !== undefined;
           const useTo = iv.t1 === 1 && toCorner !== undefined;
           const x0 = useFrom ? fromCorner!.x : a.x + dx * iv.t0 + n.nx * off;

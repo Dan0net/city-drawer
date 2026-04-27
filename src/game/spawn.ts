@@ -2,6 +2,7 @@ import type { ConsumedFrontage, Graph, GraphEdge } from './graph';
 import type { Building, BuildingType, FailedAttempt } from './buildings';
 import {
   BUILDING_TYPES,
+  MIN_FRONTAGE_LENGTH,
   aabbContainsPoint,
   pointInPoly,
   polyAabb,
@@ -66,7 +67,8 @@ export interface FrontagePick {
 }
 
 // Picks an (edge, side, interval) weighted by the world-length of free
-// frontage. Edges with no remaining frontage on either side are skipped.
+// frontage. Intervals shorter than MIN_FRONTAGE_LENGTH can never host any
+// building type and are skipped entirely.
 export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
   let total = 0;
   for (const e of graph.edges.values()) {
@@ -76,8 +78,14 @@ export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
     const b = graph.nodes.get(e.to)!;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 1e-6) continue;
-    for (const iv of front.left) total += (iv.t1 - iv.t0) * len;
-    for (const iv of front.right) total += (iv.t1 - iv.t0) * len;
+    for (const iv of front.left) {
+      const w = (iv.t1 - iv.t0) * len;
+      if (w >= MIN_FRONTAGE_LENGTH) total += w;
+    }
+    for (const iv of front.right) {
+      const w = (iv.t1 - iv.t0) * len;
+      if (w >= MIN_FRONTAGE_LENGTH) total += w;
+    }
   }
   if (total <= 0) return null;
   let r = rand() * total;
@@ -89,11 +97,15 @@ export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 1e-6) continue;
     for (const iv of front.left) {
-      r -= (iv.t1 - iv.t0) * len;
+      const w = (iv.t1 - iv.t0) * len;
+      if (w < MIN_FRONTAGE_LENGTH) continue;
+      r -= w;
       if (r <= 0) return { edge: e, side: 'left', t0: iv.t0, t1: iv.t1 };
     }
     for (const iv of front.right) {
-      r -= (iv.t1 - iv.t0) * len;
+      const w = (iv.t1 - iv.t0) * len;
+      if (w < MIN_FRONTAGE_LENGTH) continue;
+      r -= w;
       if (r <= 0) return { edge: e, side: 'right', t0: iv.t0, t1: iv.t1 };
     }
   }
@@ -196,13 +208,6 @@ export function trySpawn(
   const len = Math.hypot(dx, dy);
   const span = ivT1 - ivT0;
   const intervalWorld = span * len;
-  if (intervalWorld < 12) {
-    console.log('[spawn] fail: interval_too_short', {
-      intervalWorld,
-      edgeId: edge.id,
-    });
-    return null;
-  }
 
   const tx = dx / len;
   const ty = dy / len;

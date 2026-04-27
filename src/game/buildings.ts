@@ -87,6 +87,13 @@ export const BUILDING_TYPES: ReadonlyArray<BuildingTypeDef> = [
   },
 ];
 
+// Smallest frontage any building type will accept. Frontage intervals shorter
+// than this can never host a building, so they're filtered out of pickFrontage
+// and the green debug overlay.
+export const MIN_FRONTAGE_LENGTH = Math.min(
+  ...BUILDING_TYPES.map((t) => t.frontRange[0]),
+);
+
 export const BUILDING_COLORS: Record<BuildingType, number> = (() => {
   const m: Partial<Record<BuildingType, number>> = {};
   for (const t of BUILDING_TYPES) m[t.type] = t.color;
