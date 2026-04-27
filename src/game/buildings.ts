@@ -1,3 +1,5 @@
+import type { ConsumedFrontage } from './graph';
+
 export type BuildingId = number;
 export type FailedAttemptId = number;
 export type BuildingType = 'small_house' | 'shop' | 'warehouse';
@@ -20,6 +22,9 @@ export interface Building {
   aabb: BuildingAabb;
   // Sim seconds at spawn. Drives the construction animation in BuildingsLayer.
   spawnedAt: number;
+  // Frontage ranges this building occupies (front face plus any back/side
+  // faces that lie along other roads). Restored when the building is removed.
+  consumed: ConsumedFrontage[];
 }
 
 // A spawn attempt that didn't pass validation. Rendered as a red ghost outline

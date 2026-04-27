@@ -1,4 +1,4 @@
-import type { Graph, GraphEdge } from './graph';
+import type { ConsumedFrontage, Graph, GraphEdge } from './graph';
 import type { Building, BuildingType, FailedAttempt } from './buildings';
 import {
   BUILDING_TYPES,
@@ -8,7 +8,7 @@ import {
   polyArea,
   polyCentroid,
 } from './buildings';
-import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, type Side } from './roadGeometry';
+import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, sideOffset, type Side } from './roadGeometry';
 const SLICE_STEP = 1;
 const MIN_DEPTH = 4;
 const MAX_DEPTH = 50;
@@ -35,19 +35,8 @@ export interface SpawnContext {
 
 export type Rng = () => number;
 
-export interface ConsumedFrontage {
-  edgeId: number;
-  side: Side;
-  t0: number;
-  t1: number;
-}
-
 export type SpawnResult =
-  | {
-      kind: 'success';
-      building: Omit<Building, 'id'>;
-      consumed: ConsumedFrontage;
-    }
+  | { kind: 'success'; building: Omit<Building, 'id'> }
   | { kind: 'failure'; failure: Omit<FailedAttempt, 'id'> };
 
 export function pickType(rand: Rng): BuildingType {
@@ -131,6 +120,51 @@ function pickFrontLayout(
   }
   const W = frontMin + rand() * (flushMaxW - frontMin);
   return { width: W, start: opt === 'low' ? 0 : L - W };
+}
+
+// Find any road edges whose offset spine a polygon segment lies along, and
+// return the implied frontage consumption ranges. Each segment with both
+// endpoints at perpendicular distance ≈ sideOffset(kind) from a road's
+// centerline (same sign) is parallel-on-spine and contributes a t-range.
+function detectFrontageContacts(graph: Graph, poly: number[]): ConsumedFrontage[] {
+  const TOL = 0.1;
+  const out: ConsumedFrontage[] = [];
+  const n = poly.length / 2;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const p0x = poly[2 * i];
+    const p0y = poly[2 * i + 1];
+    const p1x = poly[2 * j];
+    const p1y = poly[2 * j + 1];
+    if (Math.hypot(p1x - p0x, p1y - p0y) < 1e-3) continue;
+
+    for (const e of graph.edges.values()) {
+      const a = graph.nodes.get(e.from)!;
+      const b = graph.nodes.get(e.to)!;
+      const ex = b.x - a.x;
+      const ey = b.y - a.y;
+      const elen = Math.hypot(ex, ey);
+      if (elen < 1e-6) continue;
+      const tHatX = ex / elen;
+      const tHatY = ey / elen;
+      const off = sideOffset(e.kind);
+      const u0 = (p0x - a.x) * tHatX + (p0y - a.y) * tHatY;
+      const u1 = (p1x - a.x) * tHatX + (p1y - a.y) * tHatY;
+      const v0 = (p0x - a.x) * -tHatY + (p0y - a.y) * tHatX;
+      const v1 = (p1x - a.x) * -tHatY + (p1y - a.y) * tHatX;
+      let side: 'left' | 'right';
+      if (Math.abs(v0 - off) < TOL && Math.abs(v1 - off) < TOL) side = 'left';
+      else if (Math.abs(v0 + off) < TOL && Math.abs(v1 + off) < TOL) side = 'right';
+      else continue;
+      let lo = Math.min(u0, u1) / elen;
+      let hi = Math.max(u0, u1) / elen;
+      lo = Math.max(0, Math.min(1, lo));
+      hi = Math.max(0, Math.min(1, hi));
+      if (hi - lo < 1e-6) continue;
+      out.push({ edgeId: e.id, side, t0: lo, t1: hi });
+    }
+  }
+  return out;
 }
 
 // ---------- entry point ----------
@@ -311,6 +345,17 @@ export function trySpawn(
         useRight === xs.length - 1
           ? Math.min(1, ivT0 + (layout.start + W) / len)
           : Math.min(1, t + xs[useRight] / len);
+      const primary: ConsumedFrontage = {
+        edgeId: edge.id,
+        side: pickSide,
+        t0: consumedT0,
+        t1: consumedT1,
+      };
+      // Primary first so its snapped boundaries shape the resulting interval
+      // splits; detected contacts (back face / side faces) layer on top with
+      // raw polygon-vertex t-ranges. consumeFrontage is idempotent, so any
+      // re-detection of the front face is harmless.
+      const consumed = [primary, ...detectFrontageContacts(ctx.graph, built.poly)];
       return {
         kind: 'success',
         building: {
@@ -319,12 +364,7 @@ export function trySpawn(
           centroid: built.centroid,
           aabb: built.aabb,
           spawnedAt: simTime,
-        },
-        consumed: {
-          edgeId: edge.id,
-          side: pickSide,
-          t0: consumedT0,
-          t1: consumedT1,
+          consumed,
         },
       };
     }

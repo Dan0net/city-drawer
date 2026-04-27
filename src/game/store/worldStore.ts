@@ -179,21 +179,37 @@ export const useWorldStore = create<WorldState>((set, get) => {
       } else {
         const idx = bs.findIndex((b) => b.id === bulldozeHover.id);
         if (idx >= 0) {
+          const removed = bs[idx];
           bs.splice(idx, 1);
-          set({ buildingsVersion: get().buildingsVersion + 1, bulldozeHover: null });
+          let bumpGraph = false;
+          for (const c of removed.consumed) {
+            if (g.restoreFrontage(c.edgeId, c.side, c.t0, c.t1)) bumpGraph = true;
+          }
+          set({
+            buildingsVersion: get().buildingsVersion + 1,
+            bulldozeHover: null,
+            ...(bumpGraph ? { graphVersion: g.version } : {}),
+          });
         }
       }
     },
 
     clearBuildings: () => {
-      const { buildings: bs, failedAttempts: fa } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa } = get();
       if (bs.length === 0 && fa.length === 0) return;
+      let bumpGraph = false;
+      for (const b of bs) {
+        for (const c of b.consumed) {
+          if (g.restoreFrontage(c.edgeId, c.side, c.t0, c.t1)) bumpGraph = true;
+        }
+      }
       bs.length = 0;
       fa.length = 0;
       set({
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
         bulldozeHover: null,
+        ...(bumpGraph ? { graphVersion: g.version } : {}),
       });
     },
 
@@ -228,9 +244,10 @@ export const useWorldStore = create<WorldState>((set, get) => {
         );
         if (result?.kind === 'success') {
           s.buildings.push({ ...result.building, id: nextBuildingId++ });
-          const c = result.consumed;
-          if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
-            bumpGraph = true;
+          for (const c of result.building.consumed) {
+            if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
+              bumpGraph = true;
+            }
           }
           bumpBuildings = true;
         } else if (result?.kind === 'failure') {

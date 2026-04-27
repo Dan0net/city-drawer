@@ -31,6 +31,13 @@ export interface FrontageSides {
   right: Interval[];
 }
 
+export interface ConsumedFrontage {
+  edgeId: EdgeId;
+  side: 'left' | 'right';
+  t0: number;
+  t1: number;
+}
+
 export type Anchor =
   | { kind: 'free'; x: number; y: number }
   | { kind: 'node'; nodeId: NodeId }
@@ -96,6 +103,21 @@ export class Graph {
     if (hi - lo < 1e-6) return false;
     if (side === 'left') front.left = subtractInterval(front.left, lo, hi);
     else front.right = subtractInterval(front.right, lo, hi);
+    this.version++;
+    return true;
+  }
+
+  // Inverse of consumeFrontage: union [t0, t1] back into the side's intervals,
+  // merging with any adjacent or overlapping ones. Used when a building is
+  // removed and its frontage becomes available again.
+  restoreFrontage(id: EdgeId, side: 'left' | 'right', t0: number, t1: number): boolean {
+    const front = this.frontages.get(id);
+    if (!front) return false;
+    const lo = Math.max(0, Math.min(1, Math.min(t0, t1)));
+    const hi = Math.max(0, Math.min(1, Math.max(t0, t1)));
+    if (hi - lo < 1e-6) return false;
+    if (side === 'left') front.left = unionInterval(front.left, lo, hi);
+    else front.right = unionInterval(front.right, lo, hi);
     this.version++;
     return true;
   }
@@ -351,6 +373,23 @@ export class Graph {
 
 function fullFrontage(): FrontageSides {
   return { left: [{ t0: 0, t1: 1 }], right: [{ t0: 0, t1: 1 }] };
+}
+
+function unionInterval(intervals: Interval[], lo: number, hi: number): Interval[] {
+  let curLo = lo;
+  let curHi = hi;
+  const out: Interval[] = [];
+  for (const iv of intervals) {
+    if (iv.t1 < curLo || iv.t0 > curHi) {
+      out.push(iv);
+    } else {
+      curLo = Math.min(curLo, iv.t0);
+      curHi = Math.max(curHi, iv.t1);
+    }
+  }
+  out.push({ t0: curLo, t1: curHi });
+  out.sort((a, b) => a.t0 - b.t0);
+  return out;
 }
 
 function subtractInterval(intervals: Interval[], lo: number, hi: number): Interval[] {
