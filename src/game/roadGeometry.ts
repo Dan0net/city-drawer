@@ -1,6 +1,10 @@
 import type { EdgeId, EdgeKind, Graph } from './graph';
 
-export const ROAD_HALF_WIDTH: Record<EdgeKind, number> = { road: 3, path: 1 };
+export const ROAD_HALF_WIDTH: Record<EdgeKind, number> = {
+  road: 4,
+  small_road: 2,
+  path: 1,
+};
 export const EDGE_CLEARANCE = 0.5;
 
 export type Side = 'left' | 'right';

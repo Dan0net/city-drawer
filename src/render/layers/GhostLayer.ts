@@ -2,7 +2,8 @@ import { Container, Graphics } from 'pixi.js';
 import { useWorldStore } from '@game/store/worldStore';
 import { useCameraStore } from '@game/store/cameraStore';
 
-const ROAD_WIDTH = 6;
+const ROAD_WIDTH = 8;
+const SMALL_ROAD_WIDTH = 4;
 const PATH_WIDTH = 2;
 const GHOST_COLOR = 0x4a90ff;
 const SNAP_NODE_COLOR = 0x6cf08a;
@@ -24,9 +25,10 @@ export class GhostLayer {
     const g = this.g;
     g.clear();
     if (!pointerWorld) return;
-    if (tool !== 'road' && tool !== 'path') return;
+    if (tool !== 'road' && tool !== 'small_road' && tool !== 'path') return;
 
-    const width = tool === 'road' ? ROAD_WIDTH : PATH_WIDTH;
+    const width =
+      tool === 'road' ? ROAD_WIDTH : tool === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
 
     if (drawingStart && snap) {
       g.moveTo(drawingStart.x, drawingStart.y).lineTo(snap.x, snap.y);

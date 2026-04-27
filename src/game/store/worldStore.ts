@@ -6,7 +6,7 @@ import { aabbContainsPoint, pointInPoly, polyOverlapsObb } from '@game/buildings
 import { sideOffset } from '@game/roadGeometry';
 import { trySpawn } from '@game/spawn';
 
-export type Tool = 'none' | 'road' | 'path' | 'bulldoze';
+export type Tool = 'none' | 'road' | 'small_road' | 'path' | 'bulldoze';
 
 export type SnapResult =
   | { kind: 'node'; nodeId: NodeId; x: number; y: number }
@@ -171,7 +171,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
     setPointer: (x, y, radius) => {
       const { graph: g, tool, buildings: bs, drawingStart } = get();
       const pointerWorld = { x, y };
-      if (tool === 'road' || tool === 'path') {
+      if (tool === 'road' || tool === 'small_road' || tool === 'path') {
         const newSnap = computeSnap(g, x, y, radius);
         const preview = drawingStart
           ? predictRoadBulldoze(drawingStart, newSnap, tool, bs)

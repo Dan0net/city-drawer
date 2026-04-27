@@ -2,7 +2,7 @@ import { clamp } from '@lib/math';
 
 export type NodeId = number;
 export type EdgeId = number;
-export type EdgeKind = 'road' | 'path';
+export type EdgeKind = 'road' | 'small_road' | 'path';
 
 export interface GraphNode {
   id: NodeId;

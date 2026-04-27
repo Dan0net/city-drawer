@@ -147,7 +147,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom);
 
         const tool = useWorldStore.getState().tool;
-        if (tool === 'road' || tool === 'path') {
+        if (tool === 'road' || tool === 'small_road' || tool === 'path') {
           useWorldStore.getState().beginOrCommitDraw(tool);
         } else if (tool === 'bulldoze') {
           useWorldStore.getState().removeAtPointer();
@@ -176,7 +176,8 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         else if (k === '`') useUiStore.getState().toggleFps();
         else if (k === 'r') useCameraStore.getState().reset();
         else if (k === '1') useWorldStore.getState().toggleTool('road');
-        else if (k === '2') useWorldStore.getState().toggleTool('path');
+        else if (k === '2') useWorldStore.getState().toggleTool('small_road');
+        else if (k === '3') useWorldStore.getState().toggleTool('path');
         else if (k === '0') useWorldStore.getState().setTool('none');
         else if (k === 'b') useWorldStore.getState().toggleTool('bulldoze');
         else if (k === 'p') useWorldStore.getState().togglePause();

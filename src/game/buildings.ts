@@ -2,7 +2,7 @@ import type { ConsumedFrontage } from './graph';
 
 export type BuildingId = number;
 export type FailedAttemptId = number;
-export type BuildingType = 'small_house' | 'shop' | 'warehouse';
+export type BuildingType = 'small_house' | 'shop' | 'warehouse' | 'park';
 
 export interface BuildingAabb {
   minX: number;
@@ -46,6 +46,10 @@ export interface BuildingTypeDef {
   // Preferred area. Spawner picks the largest size first; on rejection, retries
   // with a smaller targetArea (see SHRINK_FACTORS in spawn.ts).
   targetArea: number;
+  // Optional [min, max] range; when present, the spawner samples a target
+  // area in this range per spawn instead of using the fixed targetArea.
+  // Used by parks, which have wildly variable sizes.
+  targetAreaRange?: [number, number];
   // Acceptable frontage range (meters) along the road tangent.
   frontRange: [number, number];
 }
@@ -71,6 +75,15 @@ export const BUILDING_TYPES: ReadonlyArray<BuildingTypeDef> = [
     color: 0x848c95,
     targetArea: 1800,
     frontRange: [36, 54],
+  },
+  {
+    type: 'park',
+    weight: 0.10,
+    color: 0x6ba070,
+    // Median used only as a fallback; per-spawn area is sampled from range.
+    targetArea: 600,
+    targetAreaRange: [80, 2400],
+    frontRange: [4, 60],
   },
 ];
 

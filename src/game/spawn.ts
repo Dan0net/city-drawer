@@ -50,6 +50,14 @@ export function pickType(rand: Rng): BuildingType {
   return BUILDING_TYPES[0].type;
 }
 
+function sampleTargetArea(td: (typeof BUILDING_TYPES)[number], rand: Rng): number {
+  if (td.targetAreaRange) {
+    const [lo, hi] = td.targetAreaRange;
+    return lo + rand() * (hi - lo);
+  }
+  return td.targetArea;
+}
+
 export interface FrontagePick {
   edge: GraphEdge;
   side: Side;
@@ -208,10 +216,20 @@ export function trySpawn(
   const typeName = pickType(rand);
   const typeDef = BUILDING_TYPES.find((td) => td.type === typeName)!;
   const [frontMin, frontMax] = typeDef.frontRange;
+  // Sampled per spawn for types with targetAreaRange (parks). For fixed-area
+  // types this is just the constant typeDef.targetArea.
+  const sampledTargetArea = sampleTargetArea(typeDef, rand);
+  // The polygon depth is targetArea / W and must be ≥ MIN_DEPTH at every slice.
+  // Cap the effective frontMax so wise picking can't choose a W incompatible
+  // with the sampled area (relevant for parks: small area + wide frontRange).
+  const effectiveFrontMax = Math.min(frontMax, sampledTargetArea / MIN_DEPTH);
 
   // Wise front-edge selection: choose width and start offset within the
   // interval so any leftover is either zero or > SLIVER_GAP.
-  const layout = pickFrontLayout(intervalWorld, frontMin, frontMax, rand);
+  const layout =
+    effectiveFrontMax >= frontMin
+      ? pickFrontLayout(intervalWorld, frontMin, effectiveFrontMax, rand)
+      : null;
   const fallbackT = ivT0 + 0.5 * span;
   const fallbackX = from.x + dx * fallbackT;
   const fallbackY = from.y + dy * fallbackT;
@@ -314,7 +332,7 @@ export function trySpawn(
 
   let lastBuilt: PlacedPoly | null = null;
   for (const factor of SHRINK_FACTORS) {
-    const targetArea = typeDef.targetArea * factor;
+    const targetArea = sampledTargetArea * factor;
     const built = buildPolygon(
       anchorX,
       anchorY,
@@ -375,7 +393,7 @@ export function trySpawn(
       edgeId: edge.id,
       type: typeName,
       area: lastBuilt.area,
-      targetArea: typeDef.targetArea,
+      targetArea: sampledTargetArea,
       minRatio: MIN_AREA_RATIO,
     });
     return {
@@ -389,7 +407,7 @@ export function trySpawn(
       },
     };
   }
-  return fail('no_polygon_buildable', { finalWidth, targetArea: typeDef.targetArea });
+  return fail('no_polygon_buildable', { finalWidth, targetArea: sampledTargetArea });
 }
 
 // ---------- polygon construction ----------

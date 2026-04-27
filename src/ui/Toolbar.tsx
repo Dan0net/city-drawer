@@ -72,7 +72,8 @@ export function Toolbar() {
       }}
     >
       <ToolButton tool="road" label="Road" hotkey="1" />
-      <ToolButton tool="path" label="Path" hotkey="2" />
+      <ToolButton tool="small_road" label="Small road" hotkey="2" />
+      <ToolButton tool="path" label="Path" hotkey="3" />
       <ToolButton tool="bulldoze" label="Bulldoze" hotkey="B" />
       <div style={{ width: 1, background: '#2a3445', margin: '0 2px' }} />
       <button

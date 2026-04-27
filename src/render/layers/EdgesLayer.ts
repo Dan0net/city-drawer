@@ -1,9 +1,11 @@
 import { Container, Graphics } from 'pixi.js';
 import { useWorldStore } from '@game/store/worldStore';
 
-const ROAD_WIDTH = 6;
+const ROAD_WIDTH = 8;
+const SMALL_ROAD_WIDTH = 4;
 const PATH_WIDTH = 2;
 const ROAD_COLOR = 0x2c3038;
+const SMALL_ROAD_COLOR = 0x3a4250;
 const PATH_COLOR = 0x9a8a72;
 const BULLDOZE_COLOR = 0xe55050;
 
@@ -39,7 +41,8 @@ export class EdgesLayer {
     const { graph } = useWorldStore.getState();
     this.base.clear();
 
-    // Paths first, then roads on top so road meets road cleanly at junctions.
+    // Paths first, then small roads, then roads on top so larger meets larger
+    // cleanly at junctions.
     let drewPath = false;
     for (const e of graph.edges.values()) {
       if (e.kind !== 'path') continue;
@@ -50,6 +53,23 @@ export class EdgesLayer {
     }
     if (drewPath) {
       this.base.stroke({ width: PATH_WIDTH, color: PATH_COLOR, alpha: 0.95, cap: 'round' });
+    }
+
+    let drewSmall = false;
+    for (const e of graph.edges.values()) {
+      if (e.kind !== 'small_road') continue;
+      const a = graph.nodes.get(e.from)!;
+      const b = graph.nodes.get(e.to)!;
+      this.base.moveTo(a.x, a.y).lineTo(b.x, b.y);
+      drewSmall = true;
+    }
+    if (drewSmall) {
+      this.base.stroke({
+        width: SMALL_ROAD_WIDTH,
+        color: SMALL_ROAD_COLOR,
+        alpha: 1,
+        cap: 'round',
+      });
     }
 
     let drewRoad = false;
@@ -74,9 +94,10 @@ export class EdgesLayer {
       if (!e) return;
       const a = graph.nodes.get(e.from)!;
       const b = graph.nodes.get(e.to)!;
-      const w = (e.kind === 'road' ? ROAD_WIDTH : PATH_WIDTH) + 3;
+      const baseW =
+        e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
       this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      this.hover.stroke({ width: w, color: BULLDOZE_COLOR, alpha: 0.55, cap: 'round' });
+      this.hover.stroke({ width: baseW + 3, color: BULLDOZE_COLOR, alpha: 0.55, cap: 'round' });
     } else {
       const n = graph.nodes.get(bulldozeHover.id);
       if (!n) return;
