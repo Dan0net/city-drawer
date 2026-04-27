@@ -80,6 +80,54 @@ export const BUILDING_COLORS: Record<BuildingType, number> = (() => {
   return m as Record<BuildingType, number>;
 })();
 
+// SAT overlap test between a polygon and an oriented bbox.
+// Used to detect which buildings a freshly-drawn road would slice through.
+export function polyOverlapsObb(
+  poly: number[],
+  cx: number,
+  cy: number,
+  len: number,
+  width: number,
+  rot: number,
+): boolean {
+  const tx = Math.cos(rot);
+  const ty = Math.sin(rot);
+  const nx = -ty;
+  const ny = tx;
+  const halfLen = len / 2;
+  const halfWidth = width / 2;
+  const n = poly.length / 2;
+  if (n < 3) return false;
+
+  const axes: number[] = [tx, ty, nx, ny];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ex = poly[2 * j] - poly[2 * i];
+    const ey = poly[2 * j + 1] - poly[2 * i + 1];
+    const elen = Math.hypot(ex, ey);
+    if (elen < 1e-9) continue;
+    axes.push(-ey / elen, ex / elen);
+  }
+
+  for (let k = 0; k < axes.length; k += 2) {
+    const ax = axes[k];
+    const ay = axes[k + 1];
+    let pmin = Infinity;
+    let pmax = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const proj = poly[2 * i] * ax + poly[2 * i + 1] * ay;
+      if (proj < pmin) pmin = proj;
+      if (proj > pmax) pmax = proj;
+    }
+    const ccent = cx * ax + cy * ay;
+    const rad =
+      halfLen * Math.abs(tx * ax + ty * ay) +
+      halfWidth * Math.abs(nx * ax + ny * ay);
+    if (pmax < ccent - rad || ccent + rad < pmin) return false;
+  }
+  return true;
+}
+
 // ---------- polygon helpers ----------
 
 export function polyArea(poly: number[]): number {

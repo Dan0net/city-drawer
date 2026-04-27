@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { aabbContainsPoint, pointInPoly } from '@game/buildings';
+import { aabbContainsPoint, pointInPoly, polyOverlapsObb } from '@game/buildings';
+import { sideOffset } from '@game/roadGeometry';
 import { trySpawn } from '@game/spawn';
 
 export type Tool = 'none' | 'road' | 'path' | 'bulldoze';
@@ -29,6 +30,9 @@ export interface WorldState {
   pointerWorld: { x: number; y: number } | null;
   snap: SnapResult | null;
   bulldozeHover: BulldozeHover | null;
+  // Buildings the in-progress road would bulldoze on commit. Recomputed on
+  // each setPointer while drawingStart is set.
+  bulldozePreview: BuildingId[];
   simTime: number;
   paused: boolean;
 
@@ -68,6 +72,60 @@ const buildingAtPoint = (buildings: Building[], x: number, y: number): Building 
   return null;
 };
 
+const predictRoadBulldoze = (
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  kind: EdgeKind,
+  buildings: Building[],
+): BuildingId[] => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return [];
+  const cx = (start.x + end.x) / 2;
+  const cy = (start.y + end.y) / 2;
+  const rot = Math.atan2(dy, dx);
+  const width = 2 * sideOffset(kind);
+  const out: BuildingId[] = [];
+  for (const b of buildings) {
+    if (polyOverlapsObb(b.poly, cx, cy, len, width, rot)) out.push(b.id);
+  }
+  return out;
+};
+
+const buildingsWithPrimaryOn = (
+  edgeIds: Set<EdgeId>,
+  buildings: Building[],
+): BuildingId[] => {
+  const out: BuildingId[] = [];
+  for (const b of buildings) {
+    const primaryEdge = b.consumed[0]?.edgeId;
+    if (primaryEdge != null && edgeIds.has(primaryEdge)) out.push(b.id);
+  }
+  return out;
+};
+
+// Removes a single building, restoring its consumed frontages on every edge
+// other than `excludeEdgeIds` (which we're about to delete). Returns true if
+// any frontage was actually restored.
+const removeBuildingRestoring = (
+  graph: Graph,
+  buildings: Building[],
+  buildingId: BuildingId,
+  excludeEdgeIds: Set<EdgeId> | null,
+): boolean => {
+  const idx = buildings.findIndex((b) => b.id === buildingId);
+  if (idx < 0) return false;
+  const b = buildings[idx];
+  buildings.splice(idx, 1);
+  let restored = false;
+  for (const c of b.consumed) {
+    if (excludeEdgeIds && excludeEdgeIds.has(c.edgeId)) continue;
+    if (graph.restoreFrontage(c.edgeId, c.side, c.t0, c.t1)) restored = true;
+  }
+  return restored;
+};
+
 const SPAWN_INTERVAL_MIN = 0.4; // seconds
 const SPAWN_INTERVAL_MAX = 0.8;
 // Animation timings here mirror the renderer; we only need them so we know when
@@ -95,32 +153,54 @@ export const useWorldStore = create<WorldState>((set, get) => {
     pointerWorld: null,
     snap: null,
     bulldozeHover: null,
+    bulldozePreview: [],
     simTime: 0,
     paused: false,
 
-    setTool: (t) => set({ tool: t, drawingStart: null, bulldozeHover: null }),
+    setTool: (t) =>
+      set({ tool: t, drawingStart: null, bulldozeHover: null, bulldozePreview: [] }),
 
     toggleTool: (t) =>
       set((s) => ({
         tool: s.tool === t ? 'none' : t,
         drawingStart: null,
         bulldozeHover: null,
+        bulldozePreview: [],
       })),
 
     setPointer: (x, y, radius) => {
-      const { graph: g, tool, buildings: bs } = get();
+      const { graph: g, tool, buildings: bs, drawingStart } = get();
       const pointerWorld = { x, y };
       if (tool === 'road' || tool === 'path') {
-        set({ pointerWorld, snap: computeSnap(g, x, y, radius), bulldozeHover: null });
+        const newSnap = computeSnap(g, x, y, radius);
+        const preview = drawingStart
+          ? predictRoadBulldoze(drawingStart, newSnap, tool, bs)
+          : [];
+        set({
+          pointerWorld,
+          snap: newSnap,
+          bulldozeHover: null,
+          bulldozePreview: preview,
+        });
       } else if (tool === 'bulldoze') {
         const b = buildingAtPoint(bs, x, y);
         if (b) {
-          set({ pointerWorld, snap: null, bulldozeHover: { kind: 'building', id: b.id } });
+          set({
+            pointerWorld,
+            snap: null,
+            bulldozeHover: { kind: 'building', id: b.id },
+            bulldozePreview: [],
+          });
           return;
         }
         const node = g.nearestNode(x, y, radius);
         if (node) {
-          set({ pointerWorld, snap: null, bulldozeHover: { kind: 'node', id: node.id } });
+          set({
+            pointerWorld,
+            snap: null,
+            bulldozeHover: { kind: 'node', id: node.id },
+            bulldozePreview: buildingsWithPrimaryOn(node.edges, bs),
+          });
           return;
         }
         const edge = g.nearestEdge(x, y, radius);
@@ -128,16 +208,18 @@ export const useWorldStore = create<WorldState>((set, get) => {
           pointerWorld,
           snap: null,
           bulldozeHover: edge ? { kind: 'edge', id: edge.edge.id } : null,
+          bulldozePreview: edge ? buildingsWithPrimaryOn(new Set([edge.edge.id]), bs) : [],
         });
       } else {
-        set({ pointerWorld, snap: null, bulldozeHover: null });
+        set({ pointerWorld, snap: null, bulldozeHover: null, bulldozePreview: [] });
       }
     },
 
-    clearPointer: () => set({ pointerWorld: null, snap: null, bulldozeHover: null }),
+    clearPointer: () =>
+      set({ pointerWorld: null, snap: null, bulldozeHover: null, bulldozePreview: [] }),
 
     beginOrCommitDraw: (kind) => {
-      const { drawingStart, snap, graph: g } = get();
+      const { drawingStart, snap, graph: g, buildings: bs } = get();
       if (!snap) return;
       if (!drawingStart) {
         set({ drawingStart: snap });
@@ -148,34 +230,85 @@ export const useWorldStore = create<WorldState>((set, get) => {
         snap.kind === 'node' &&
         drawingStart.nodeId === snap.nodeId
       ) {
-        set({ drawingStart: null });
+        set({ drawingStart: null, bulldozePreview: [] });
         return;
       }
+      // Capture predicted bulldoze targets BEFORE insertEdge — split anchors
+      // mutate the graph and would shift edge ids, but the buildings list
+      // is keyed by stable building id.
+      const toBulldoze = predictRoadBulldoze(drawingStart, snap, kind, bs);
+
       const result = g.insertEdge(snapToAnchor(drawingStart), snapToAnchor(snap), kind);
-      if (!result) return;
+      if (!result) {
+        set({ bulldozePreview: [] });
+        return;
+      }
+
+      let bumpBuildings = false;
+      for (const bid of toBulldoze) {
+        if (removeBuildingRestoring(g, bs, bid, null)) {
+          // restore happened — version already bumped inside graph
+        }
+        bumpBuildings = true;
+      }
 
       const endNode = g.nodes.get(result.toId);
-      if (!endNode) {
-        set({ drawingStart: null, graphVersion: g.version });
-        return;
-      }
-      set({
-        drawingStart: { kind: 'node', nodeId: endNode.id, x: endNode.x, y: endNode.y },
+      const patch: Partial<WorldState> = {
         graphVersion: g.version,
-      });
+        bulldozePreview: [],
+      };
+      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+      patch.drawingStart = endNode
+        ? { kind: 'node', nodeId: endNode.id, x: endNode.x, y: endNode.y }
+        : null;
+      set(patch);
     },
 
-    cancelDraw: () => set({ drawingStart: null }),
+    cancelDraw: () => set({ drawingStart: null, bulldozePreview: [] }),
 
     removeAtPointer: () => {
       const { graph: g, bulldozeHover, buildings: bs } = get();
       if (!bulldozeHover) return;
       if (bulldozeHover.kind === 'edge') {
-        g.removeEdge(bulldozeHover.id);
-        set({ graphVersion: g.version, bulldozeHover: null });
+        const eid = bulldozeHover.id;
+        const exclude = new Set<EdgeId>([eid]);
+        let bumpBuildings = false;
+        // Buildings whose PRIMARY (front) face is on this edge get bulldozed.
+        // Back/side contacts on this edge alone are tolerated and leave the
+        // building intact; their consumed entries against this edge become
+        // stale references that restoreFrontage no-ops on.
+        for (let i = bs.length - 1; i >= 0; i--) {
+          if (bs[i].consumed[0]?.edgeId === eid) {
+            removeBuildingRestoring(g, bs, bs[i].id, exclude);
+            bumpBuildings = true;
+          }
+        }
+        g.removeEdge(eid);
+        const patch: Partial<WorldState> = {
+          graphVersion: g.version,
+          bulldozeHover: null,
+        };
+        if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+        set(patch);
       } else if (bulldozeHover.kind === 'node') {
-        g.removeNode(bulldozeHover.id);
-        set({ graphVersion: g.version, bulldozeHover: null });
+        const nid = bulldozeHover.id;
+        const node = g.nodes.get(nid);
+        const incidentEdgeIds = new Set<EdgeId>(node ? node.edges : []);
+        let bumpBuildings = false;
+        for (let i = bs.length - 1; i >= 0; i--) {
+          const primaryEdge = bs[i].consumed[0]?.edgeId;
+          if (primaryEdge != null && incidentEdgeIds.has(primaryEdge)) {
+            removeBuildingRestoring(g, bs, bs[i].id, incidentEdgeIds);
+            bumpBuildings = true;
+          }
+        }
+        g.removeNode(nid);
+        const patch: Partial<WorldState> = {
+          graphVersion: g.version,
+          bulldozeHover: null,
+        };
+        if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+        set(patch);
       } else {
         const idx = bs.findIndex((b) => b.id === bulldozeHover.id);
         if (idx >= 0) {

@@ -25,16 +25,19 @@ interface Node {
 export class BuildingsLayer {
   readonly container = new Container();
   private base = new Container();
+  private preview = new Graphics();
   private hover = new Graphics();
   private buildingNodes = new Map<BuildingId, Node>();
   private failedNodes = new Map<FailedAttemptId, Node>();
   private lastBuildingsVersion = -1;
   private lastFailedVersion = -1;
   private lastHover: number | null = null;
+  private lastPreviewKey = '';
 
   constructor() {
     this.container.label = 'buildings';
     this.container.addChild(this.base);
+    this.container.addChild(this.preview);
     this.container.addChild(this.hover);
   }
 
@@ -55,6 +58,14 @@ export class BuildingsLayer {
     if (hoverId !== this.lastHover) {
       this.lastHover = hoverId;
       this.drawHover();
+    }
+
+    // Recompute preview when its identity OR the underlying buildings change
+    // (a bulldozed building drops out, polygons change, etc.).
+    const previewKey = `${s.buildingsVersion}:${s.bulldozePreview.join(',')}`;
+    if (previewKey !== this.lastPreviewKey) {
+      this.lastPreviewKey = previewKey;
+      this.drawPreview();
     }
   }
 
@@ -182,6 +193,17 @@ export class BuildingsLayer {
     const b = buildings.find((x) => x.id === bulldozeHover.id);
     if (!b) return;
     this.hover.poly(b.poly).fill({ color: BULLDOZE, alpha: 0.5 });
+  }
+
+  private drawPreview(): void {
+    const { buildings, bulldozePreview } = useWorldStore.getState();
+    this.preview.clear();
+    if (bulldozePreview.length === 0) return;
+    const ids = new Set(bulldozePreview);
+    for (const b of buildings) {
+      if (!ids.has(b.id)) continue;
+      this.preview.poly(b.poly).fill({ color: BULLDOZE, alpha: 0.4 });
+    }
   }
 }
 
