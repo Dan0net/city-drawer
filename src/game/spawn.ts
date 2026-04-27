@@ -75,14 +75,20 @@ export function trySpawn(
   rand: Rng,
 ): SpawnResult | null {
   const edge = pickEdge(ctx.graph, rand);
-  if (!edge) return null;
+  if (!edge) {
+    console.log('[spawn] fail: no_edge');
+    return null;
+  }
 
   const from = ctx.graph.nodes.get(edge.from)!;
   const to = ctx.graph.nodes.get(edge.to)!;
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const len = Math.hypot(dx, dy);
-  if (len < 12) return null;
+  if (len < 12) {
+    console.log('[spawn] fail: edge_too_short', { len, edgeId: edge.id });
+    return null;
+  }
 
   const tx = dx / len;
   const ty = dy / len;
@@ -105,12 +111,25 @@ export function trySpawn(
   const xCapNeg = -Math.min(frontMax / 2, distToStart - 1);
   const xCapPos = Math.min(frontMax / 2, distToEnd - 1);
 
-  const fail = (reason: string): SpawnResult => ({
-    kind: 'failure',
-    failure: makePlaceholder(anchorX, anchorY, tx, ty, nx, ny, clearance, simTime, reason),
-  });
+  const fail = (reason: string, details?: Record<string, unknown>): SpawnResult => {
+    console.log(`[spawn] fail: ${reason}`, {
+      edgeId: edge.id,
+      type: typeName,
+      anchor: { x: anchorX, y: anchorY },
+      ...details,
+    });
+    return {
+      kind: 'failure',
+      failure: makePlaceholder(anchorX, anchorY, tx, ty, nx, ny, clearance, simTime, reason),
+    };
+  };
 
-  if (xCapPos - xCapNeg < frontMin) return fail('frontage_too_short');
+  if (xCapPos - xCapNeg < frontMin) {
+    return fail('frontage_too_short', {
+      available: xCapPos - xCapNeg,
+      frontMin,
+    });
+  }
 
   const xs: number[] = [];
   const depths: number[] = [];
@@ -121,7 +140,7 @@ export function trySpawn(
     const oy = anchorY + ty * x + ny * rayOffset;
     depths.push(freeDepthAt(ctx, ox, oy, nx, ny, MAX_DEPTH));
   }
-  if (xs.length === 0) return fail('no_slices');
+  if (xs.length === 0) return fail('no_slices', { xCapNeg, xCapPos });
 
   let centerIdx = 0;
   let bestAbs = Infinity;
@@ -132,7 +151,9 @@ export function trySpawn(
       centerIdx = i;
     }
   }
-  if (depths[centerIdx] < MIN_DEPTH) return fail('anchor_blocked');
+  if (depths[centerIdx] < MIN_DEPTH) {
+    return fail('anchor_blocked', { depth: depths[centerIdx], minDepth: MIN_DEPTH });
+  }
 
   let leftIdx = centerIdx;
   let rightIdx = centerIdx;
@@ -140,7 +161,24 @@ export function trySpawn(
   while (rightIdx < depths.length - 1 && depths[rightIdx + 1] >= MIN_DEPTH) rightIdx++;
 
   const usableWidth = xs[rightIdx] - xs[leftIdx];
-  if (usableWidth < frontMin) return fail('usable_width_too_small');
+  if (usableWidth < frontMin) {
+    const envelope = buildEnvelopeFailure(
+      anchorX, anchorY, tx, ty, nx, ny,
+      clearance, xs, depths, leftIdx, rightIdx,
+      simTime, 'usable_width_too_small',
+    );
+    if (envelope) {
+      console.log('[spawn] fail: usable_width_too_small', {
+        edgeId: edge.id,
+        type: typeName,
+        anchor: { x: anchorX, y: anchorY },
+        usableWidth,
+        frontMin,
+      });
+      return { kind: 'failure', failure: envelope };
+    }
+    return fail('usable_width_too_small', { usableWidth, frontMin });
+  }
 
   const halfMax = frontMax / 2;
   let useLeft = leftIdx;
@@ -150,7 +188,7 @@ export function trySpawn(
     while (xs[useRight] - xs[centerIdx] > halfMax) useRight--;
   }
   const finalWidth = xs[useRight] - xs[useLeft];
-  if (finalWidth < frontMin) return fail('final_width_too_small');
+  if (finalWidth < frontMin) return fail('final_width_too_small', { finalWidth, frontMin });
 
   let lastBuilt: PlacedPoly | null = null;
   for (const factor of SHRINK_FACTORS) {
@@ -187,6 +225,13 @@ export function trySpawn(
   }
 
   if (lastBuilt) {
+    console.log('[spawn] fail: area_below_threshold', {
+      edgeId: edge.id,
+      type: typeName,
+      area: lastBuilt.area,
+      targetArea: typeDef.targetArea,
+      minRatio: MIN_AREA_RATIO,
+    });
     return {
       kind: 'failure',
       failure: {
@@ -198,7 +243,7 @@ export function trySpawn(
       },
     };
   }
-  return fail('no_polygon_buildable');
+  return fail('no_polygon_buildable', { finalWidth, targetArea: typeDef.targetArea });
 }
 
 // ---------- polygon construction ----------
@@ -288,6 +333,44 @@ function simplifyAxisAligned(poly: number[]): number[] {
     out.push(cx, cy);
   }
   return out.length >= 8 ? out : poly;
+}
+
+// Traces the actual free envelope spanning [leftIdx..rightIdx] using each
+// slice's measured depth. Used so usable_width_too_small failures visualize
+// the real available region, not a generic placeholder rect. Returns null if
+// the envelope is too degenerate to render.
+function buildEnvelopeFailure(
+  ax: number,
+  ay: number,
+  tx: number,
+  ty: number,
+  nx: number,
+  ny: number,
+  clearance: number,
+  xs: number[],
+  depths: number[],
+  leftIdx: number,
+  rightIdx: number,
+  simTime: number,
+  reason: string,
+): Omit<FailedAttempt, 'id'> | null {
+  if (rightIdx <= leftIdx) return null;
+  const local: number[] = [];
+  local.push(xs[leftIdx], clearance);
+  local.push(xs[rightIdx], clearance);
+  for (let i = rightIdx; i >= leftIdx; i--) {
+    local.push(xs[i], clearance + depths[i]);
+  }
+  const simplified = simplifyAxisAligned(local);
+  if (simplified.length < 8) return null;
+  const poly = transformLocalToWorld(simplified, ax, ay, tx, ty, nx, ny);
+  return {
+    poly,
+    centroid: polyCentroid(poly),
+    aabb: polyAabb(poly),
+    spawnedAt: simTime,
+    reason,
+  };
 }
 
 // Small placeholder rect at the anchor, oriented to the road frame. Used to
