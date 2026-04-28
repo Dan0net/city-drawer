@@ -20,7 +20,8 @@ export class GhostLayer {
   }
 
   update(): void {
-    const { tool, drawingStart, snap, pointerWorld } = useWorldStore.getState();
+    const { tool, drawingStart, snap, pointerWorld, drawingCrossings } =
+      useWorldStore.getState();
     const { zoom } = useCameraStore.getState();
     const g = this.g;
     g.clear();
@@ -33,6 +34,16 @@ export class GhostLayer {
     if (drawingStart && snap) {
       g.moveTo(drawingStart.x, drawingStart.y).lineTo(snap.x, snap.y);
       g.stroke({ width, color: GHOST_COLOR, alpha: 0.55, cap: 'round' });
+    }
+
+    // Crossings — preview where new nodes will appear when the line commits.
+    if (drawingStart && drawingCrossings.length > 0) {
+      const r = 5 / zoom;
+      const strokeW = 1.5 / zoom;
+      for (const c of drawingCrossings) {
+        g.circle(c.x, c.y, r).fill({ color: SNAP_NODE_COLOR, alpha: 0.85 });
+        g.circle(c.x, c.y, r).stroke({ width: strokeW, color: 0x0b0e13, alpha: 0.9 });
+      }
     }
 
     // Snap marker — sized in screen pixels via 1/zoom.

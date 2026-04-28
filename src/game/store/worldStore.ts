@@ -40,6 +40,9 @@ export interface WorldState {
   // Buildings the in-progress road would bulldoze on commit. Recomputed on
   // each setPointer while drawingStart is set.
   bulldozePreview: BuildingId[];
+  // Points where the in-progress road would cross existing edges. Each
+  // becomes a real node on commit (splitting both lines).
+  drawingCrossings: { x: number; y: number }[];
   simTime: number;
   paused: boolean;
 
@@ -170,6 +173,62 @@ const predictRoadBulldoze = (
   return out;
 };
 
+interface DrawingCrossing {
+  x: number;
+  y: number;
+  t: number; // along the new line (drawingStart → end)
+  edgeId: EdgeId;
+  s: number; // along the existing edge
+}
+
+// Edges crossed by the straight segment start→end, sorted by distance from
+// start. Skips edges that share an endpoint with the start/end snap (those
+// aren't true crossings, just incidence) and the start/end split edges.
+const findRoadCrossings = (
+  graph: Graph,
+  start: SnapResult,
+  end: SnapResult,
+): DrawingCrossing[] => {
+  const ax = start.x;
+  const ay = start.y;
+  const ex = end.x - ax;
+  const ey = end.y - ay;
+  if (ex * ex + ey * ey < 1e-6) return [];
+
+  const startNode = start.kind === 'node' ? start.nodeId : null;
+  const endNode = end.kind === 'node' ? end.nodeId : null;
+  const startEdge = start.kind === 'edge' ? start.edgeId : null;
+  const endEdge = end.kind === 'edge' ? end.edgeId : null;
+  const EPS = 1e-4;
+
+  const out: DrawingCrossing[] = [];
+  for (const e of graph.edges.values()) {
+    if (e.id === startEdge || e.id === endEdge) continue;
+    if (startNode != null && (e.from === startNode || e.to === startNode)) continue;
+    if (endNode != null && (e.from === endNode || e.to === endNode)) continue;
+    const a = graph.nodes.get(e.from)!;
+    const b = graph.nodes.get(e.to)!;
+    const fx = b.x - a.x;
+    const fy = b.y - a.y;
+    const denom = ex * fy - ey * fx;
+    if (Math.abs(denom) < 1e-9) continue;
+    const inv = 1 / denom;
+    const t = ((a.x - ax) * fy - (a.y - ay) * fx) * inv;
+    const s = ((a.x - ax) * ey - (a.y - ay) * ex) * inv;
+    if (t < EPS || t > 1 - EPS) continue;
+    if (s < EPS || s > 1 - EPS) continue;
+    out.push({
+      x: ax + ex * t,
+      y: ay + ey * t,
+      t,
+      edgeId: e.id,
+      s,
+    });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+};
+
 const buildingsWithPrimaryOn = (
   edgeIds: Set<EdgeId>,
   buildings: Building[],
@@ -231,11 +290,18 @@ export const useWorldStore = create<WorldState>((set, get) => {
     snap: null,
     bulldozeHover: null,
     bulldozePreview: [],
+    drawingCrossings: [],
     simTime: 0,
     paused: false,
 
     setTool: (t) =>
-      set({ tool: t, drawingStart: null, bulldozeHover: null, bulldozePreview: [] }),
+      set({
+        tool: t,
+        drawingStart: null,
+        bulldozeHover: null,
+        bulldozePreview: [],
+        drawingCrossings: [],
+      }),
 
     toggleTool: (t) =>
       set((s) => ({
@@ -243,6 +309,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
         drawingStart: null,
         bulldozeHover: null,
         bulldozePreview: [],
+        drawingCrossings: [],
       })),
 
     setPointer: (x, y, radius) => {
@@ -262,11 +329,13 @@ export const useWorldStore = create<WorldState>((set, get) => {
         const preview = drawingStart
           ? predictRoadBulldoze(drawingStart, newSnap, tool, bs)
           : [];
+        const crossings = drawingStart ? findRoadCrossings(g, drawingStart, newSnap) : [];
         set({
           pointerWorld,
           snap: newSnap,
           bulldozeHover: null,
           bulldozePreview: preview,
+          drawingCrossings: crossings.map((c) => ({ x: c.x, y: c.y })),
         });
       } else if (tool === 'bulldoze') {
         const b = buildingAtPoint(bs, x, y);
@@ -286,6 +355,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
             snap: null,
             bulldozeHover: { kind: 'node', id: node.id },
             bulldozePreview: buildingsWithPrimaryOn(node.edges, bs),
+            drawingCrossings: [],
           });
           return;
         }
@@ -295,14 +365,27 @@ export const useWorldStore = create<WorldState>((set, get) => {
           snap: null,
           bulldozeHover: edge ? { kind: 'edge', id: edge.edge.id } : null,
           bulldozePreview: edge ? buildingsWithPrimaryOn(new Set([edge.edge.id]), bs) : [],
+          drawingCrossings: [],
         });
       } else {
-        set({ pointerWorld, snap: null, bulldozeHover: null, bulldozePreview: [] });
+        set({
+          pointerWorld,
+          snap: null,
+          bulldozeHover: null,
+          bulldozePreview: [],
+          drawingCrossings: [],
+        });
       }
     },
 
     clearPointer: () =>
-      set({ pointerWorld: null, snap: null, bulldozeHover: null, bulldozePreview: [] }),
+      set({
+        pointerWorld: null,
+        snap: null,
+        bulldozeHover: null,
+        bulldozePreview: [],
+        drawingCrossings: [],
+      }),
 
     beginOrCommitDraw: (kind) => {
       const { drawingStart, snap, graph: g, buildings: bs } = get();
@@ -316,7 +399,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
         snap.kind === 'node' &&
         drawingStart.nodeId === snap.nodeId
       ) {
-        set({ drawingStart: null, bulldozePreview: [] });
+        set({ drawingStart: null, bulldozePreview: [], drawingCrossings: [] });
         return;
       }
       // Capture predicted bulldoze targets BEFORE insertEdge — split anchors
@@ -324,9 +407,25 @@ export const useWorldStore = create<WorldState>((set, get) => {
       // is keyed by stable building id.
       const toBulldoze = predictRoadBulldoze(drawingStart, snap, kind, bs);
 
-      const result = g.insertEdge(snapToAnchor(drawingStart), snapToAnchor(snap), kind);
-      if (!result) {
-        set({ bulldozePreview: [] });
+      // Where the new line crosses existing edges. Each becomes a split
+      // anchor so both the existing edge and the new line are split at the
+      // intersection. Computed BEFORE any insertEdge so edge ids are stable.
+      const crossings = findRoadCrossings(g, drawingStart, snap);
+
+      let currentAnchor: Anchor = snapToAnchor(drawingStart);
+      let lastResult: ReturnType<typeof g.insertEdge> = null;
+      for (const c of crossings) {
+        const splitAnchor: Anchor = { kind: 'split', edgeId: c.edgeId, t: c.s };
+        const r = g.insertEdge(currentAnchor, splitAnchor, kind);
+        if (!r) continue;
+        currentAnchor = { kind: 'node', nodeId: r.toId };
+        lastResult = r;
+      }
+      const finalResult = g.insertEdge(currentAnchor, snapToAnchor(snap), kind);
+      if (finalResult) lastResult = finalResult;
+
+      if (!lastResult) {
+        set({ bulldozePreview: [], drawingCrossings: [] });
         return;
       }
 
@@ -338,10 +437,11 @@ export const useWorldStore = create<WorldState>((set, get) => {
         bumpBuildings = true;
       }
 
-      const endNode = g.nodes.get(result.toId);
+      const endNode = g.nodes.get(lastResult.toId);
       const patch: Partial<WorldState> = {
         graphVersion: g.version,
         bulldozePreview: [],
+        drawingCrossings: [],
       };
       if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
       patch.drawingStart = endNode
@@ -350,7 +450,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
       set(patch);
     },
 
-    cancelDraw: () => set({ drawingStart: null, bulldozePreview: [] }),
+    cancelDraw: () => set({ drawingStart: null, bulldozePreview: [], drawingCrossings: [] }),
 
     removeAtPointer: () => {
       const { graph: g, bulldozeHover, buildings: bs } = get();
