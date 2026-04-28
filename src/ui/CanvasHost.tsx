@@ -71,11 +71,27 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         moved: false,
       };
 
+      // 'grabbing' while a pan drag is active, 'grab' when no tool is selected
+      // (so the user knows clicking-and-dragging will pan), default otherwise.
+      const updateCursor = () => {
+        if (pointer.panning) {
+          canvas.style.cursor = 'grabbing';
+          return;
+        }
+        const tool = useWorldStore.getState().tool;
+        if (tool === 'none' || pointer.spaceDown) {
+          canvas.style.cursor = 'grab';
+          return;
+        }
+        canvas.style.cursor = '';
+      };
+
       const startPan = (e: PointerEvent) => {
         pointer.panning = true;
         pointer.lastX = e.clientX;
         pointer.lastY = e.clientY;
         canvas.setPointerCapture(e.pointerId);
+        updateCursor();
         e.preventDefault();
       };
 
@@ -133,6 +149,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         if (pointer.panning) {
           pointer.panning = false;
           if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+          updateCursor();
           return;
         }
 
@@ -168,7 +185,10 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       };
 
       const onKeyDown = (e: KeyboardEvent) => {
-        if (e.code === 'Space') pointer.spaceDown = true;
+        if (e.code === 'Space' && !pointer.spaceDown) {
+          pointer.spaceDown = true;
+          updateCursor();
+        }
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
         const k = e.key.toLowerCase();
         if (k === 'g') useUiStore.getState().toggleGrid();
@@ -185,7 +205,10 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         else if (k === 'escape') useWorldStore.getState().cancelDraw();
       };
       const onKeyUp = (e: KeyboardEvent) => {
-        if (e.code === 'Space') pointer.spaceDown = false;
+        if (e.code === 'Space') {
+          pointer.spaceDown = false;
+          updateCursor();
+        }
       };
 
       const onContextMenu = (e: MouseEvent) => e.preventDefault();
@@ -199,6 +222,14 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       canvas.addEventListener('contextmenu', onContextMenu);
       window.addEventListener('keydown', onKeyDown);
       window.addEventListener('keyup', onKeyUp);
+
+      // Cursor reflects pan-readiness: subscribed here so we react to tool
+      // changes from anywhere (toolbar clicks, hotkeys, escape). Also seed
+      // the initial cursor based on starting tool.
+      updateCursor();
+      const unsubWorld = useWorldStore.subscribe((s, prev) => {
+        if (s.tool !== prev.tool) updateCursor();
+      });
 
       // ---------- sim tick (progress + spawner) ----------
       const simLoop = createTickLoop({ hz: 30 });
@@ -233,6 +264,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
 
       cleanup = () => {
         unsubUi();
+        unsubWorld();
         resizeObserver.disconnect();
         canvas.removeEventListener('pointerdown', onPointerDown);
         canvas.removeEventListener('pointermove', onPointerMove);

@@ -45,6 +45,31 @@ function ToolButton({
   );
 }
 
+function ActionButton({
+  label,
+  hotkey,
+  onClick,
+  active = false,
+  title,
+}: {
+  label: string;
+  hotkey?: string;
+  onClick: () => void;
+  active?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      style={active ? activeBtn : baseBtn}
+      onClick={onClick}
+      title={title ?? (hotkey ? `${label} (${hotkey})` : label)}
+    >
+      {label}
+      {hotkey && <span style={{ opacity: 0.6 }}> {hotkey}</span>}
+    </button>
+  );
+}
+
 export function Toolbar() {
   const showGrid = useUiStore((s) => s.showGrid);
   const toggleGrid = useUiStore((s) => s.toggleGrid);
@@ -78,47 +103,45 @@ export function Toolbar() {
       <ToolButton tool="path" label="Path" hotkey="3" />
       <ToolButton tool="bulldoze" label="Bulldoze" hotkey="B" />
       <div style={{ width: 1, background: '#2a3445', margin: '0 2px' }} />
-      <button
-        style={paused ? activeBtn : baseBtn}
+      <ActionButton
+        label={paused ? 'Paused' : 'Pause'}
+        hotkey="P"
+        active={paused}
         onClick={() => togglePause()}
         title="Pause / resume sim (P)"
-      >
-        {paused ? 'Paused' : 'Pause'}
-      </button>
-      <button style={baseBtn} onClick={() => reset()} title="Reset camera (R)">
-        Reset
-      </button>
-      <button
-        style={showGrid ? activeBtn : baseBtn}
+      />
+      <ActionButton label="Reset" hotkey="R" onClick={() => reset()} title="Reset camera (R)" />
+      <ActionButton
+        label="Grid"
+        hotkey="G"
+        active={showGrid}
         onClick={() => toggleGrid()}
         title="Toggle grid (G)"
-      >
-        Grid
-      </button>
-      <button
-        style={showFrontages ? activeBtn : baseBtn}
+      />
+      <ActionButton
+        label="Frontages"
+        hotkey="F"
+        active={showFrontages}
         onClick={() => toggleFrontages()}
         title="Toggle available road frontages overlay (F)"
-      >
-        Frontages
-      </button>
-      <button
-        style={snapDraw ? activeBtn : baseBtn}
+      />
+      <ActionButton
+        label="Snap"
+        hotkey="S"
+        active={snapDraw}
         onClick={() => toggleSnapDraw()}
         title="Snap drawing to 45° angles and 10m increments (S)"
-      >
-        Snap
-      </button>
-      <button
-        style={baseBtn}
+      />
+      <ActionButton
+        label="Clear bldgs"
         onClick={() => clearBuildings()}
         title="Demolish every building, keep roads & paths"
-      >
-        Clear bldgs
-      </button>
-      <button style={baseBtn} onClick={() => clearAll()} title="Clear roads, paths, and buildings">
-        Clear all
-      </button>
+      />
+      <ActionButton
+        label="Clear all"
+        onClick={() => clearAll()}
+        title="Clear roads, paths, and buildings"
+      />
     </div>
   );
 }
