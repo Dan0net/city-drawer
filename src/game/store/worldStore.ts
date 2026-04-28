@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { trySpawn } from '@game/buildings/spawn';
+import { trySpawn, trySpawnFactoryOnEdge } from '@game/buildings/spawn';
+import { clearCellsUnderPoly } from '@game/demand/cellMap';
 import { useUiStore } from '@game/store/uiStore';
 import {
   applyDrawSnap,
@@ -75,11 +76,14 @@ const SPAWN_INTERVAL_MAX = 0.8;
 const EDGE_DURATION_S = 0.2;
 const FAILED_HOLD_AFTER_PERIMETER_S = 1.2;
 
+// Hoisted out of the create() closure so the demand subscription below can
+// allocate ids when it auto-spawns factories. Only one store instance exists.
+let nextBuildingId = 1;
+
 export const useWorldStore = create<WorldState>((set, get) => {
   const graph = new Graph();
   const buildings: Building[] = [];
   const failedAttempts: FailedAttempt[] = [];
-  let nextBuildingId = 1;
   let nextFailedId = 1;
   let nextSpawnAt = SPAWN_INTERVAL_MIN + Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
   const demandMaps = createDemandMaps(1337);
@@ -421,8 +425,9 @@ export const useWorldStore = create<WorldState>((set, get) => {
       let bumpGraph = false;
 
       if (newSimTime >= nextSpawnAt) {
+        const jobsField = s.demandMaps.find((m) => m.id === 'jobs')?.roadField;
         const result = trySpawn(
-          { graph: s.graph, buildings: s.buildings },
+          { graph: s.graph, buildings: s.buildings, jobsField },
           newSimTime,
           Math.random,
         );
@@ -467,16 +472,66 @@ export const useWorldStore = create<WorldState>((set, get) => {
   };
 });
 
-// Demand-map road fields are derived from graph + cell data. Recompute every
-// time the graph mutates; bump demandMapsVersion so renderers refresh.
+// Demand-map road fields are derived from graph + buildings + cell data.
+// Recompute whenever either the graph or the building list changes, then
+// attempt deterministic factory spawning where the resource map is hot.
+// Triggered factory spawns mutate state, which re-enters this subscriber
+// and converges once no edge passes the threshold or fits a factory.
+const RESOURCE_FACTORY_THRESHOLD = 0.2;
 {
-  let lastSeenGraphVersion = -1;
+  let lastGraphVersion = -1;
+  let lastBuildingsVersion = -1;
   const recompute = (s: WorldState): void => {
-    if (s.graphVersion === lastSeenGraphVersion) return;
-    lastSeenGraphVersion = s.graphVersion;
-    for (const m of s.demandMaps) m.recompute(s.graph);
+    if (
+      s.graphVersion === lastGraphVersion &&
+      s.buildingsVersion === lastBuildingsVersion
+    ) {
+      return;
+    }
+    lastGraphVersion = s.graphVersion;
+    lastBuildingsVersion = s.buildingsVersion;
+    for (const m of s.demandMaps) m.recompute({ graph: s.graph, buildings: s.buildings });
+    autoSpawnFactory();
     useWorldStore.setState((curr) => ({ demandMapsVersion: curr.demandMapsVersion + 1 }));
   };
+
+  // Picks the hottest edge by avg of endpoint resource road-field values,
+  // and tries to place one factory on it. Returns true if a factory landed.
+  const autoSpawnFactory = (): boolean => {
+    const s = useWorldStore.getState();
+    const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
+    if (!resourceMap) return false;
+    let bestEdgeId: number | null = null;
+    let bestVal = RESOURCE_FACTORY_THRESHOLD;
+    for (const e of s.graph.edges.values()) {
+      const va = resourceMap.roadField.get(e.from) ?? 0;
+      const vb = resourceMap.roadField.get(e.to) ?? 0;
+      const v = (va + vb) * 0.5;
+      if (v > bestVal) {
+        bestVal = v;
+        bestEdgeId = e.id;
+      }
+    }
+    if (bestEdgeId == null) return false;
+    const result = trySpawnFactoryOnEdge(
+      { graph: s.graph, buildings: s.buildings },
+      bestEdgeId,
+      s.simTime,
+      Math.random,
+    );
+    if (result?.kind !== 'success') return false;
+    s.buildings.push({ ...result.building, id: nextBuildingId++ });
+    for (const c of result.building.consumed) {
+      s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1);
+    }
+    clearCellsUnderPoly(resourceMap.cellMap, result.building.poly, result.building.aabb);
+    useWorldStore.setState({
+      buildingsVersion: s.buildingsVersion + 1,
+      graphVersion: s.graph.version,
+    });
+    return true;
+  };
+
   // Initial pass for the just-seeded maps (no nodes yet, but keeps versioning consistent).
   recompute(useWorldStore.getState());
   useWorldStore.subscribe(recompute);

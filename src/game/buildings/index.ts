@@ -4,7 +4,7 @@ import type { Vec2 } from '@lib/math';
 
 export type BuildingId = number;
 export type FailedAttemptId = number;
-export type BuildingType = 'small_house' | 'shop' | 'warehouse' | 'park';
+export type BuildingType = 'small_house' | 'shop' | 'warehouse' | 'park' | 'factory';
 
 export interface Building {
   id: BuildingId;
@@ -54,28 +54,40 @@ export const BUILDING_TYPES: ReadonlyArray<BuildingTypeDef> = [
     targetArea: 280,
     frontRange: [14, 22],
   },
+  // Non-residential, non-industrial types are disabled until later steps in
+  // the demand loop wire them up (commercial driven by residents, etc.).
+  // Weight 0 means the random picker skips them entirely.
   {
     type: 'shop',
-    weight: 0.3,
+    weight: 0,
     color: 0x6c97c4,
     targetArea: 800,
     frontRange: [24, 36],
   },
   {
     type: 'warehouse',
-    weight: 0.15,
+    weight: 0,
     color: 0x848c95,
     targetArea: 1800,
     frontRange: [36, 54],
   },
   {
     type: 'park',
-    weight: 0.10,
+    weight: 0,
     color: 0x6ba070,
-    // Median used only as a fallback; per-spawn area is sampled from range.
     targetArea: 600,
     targetAreaRange: [80, 2400],
     frontRange: [4, 60],
+  },
+  // Factories never spawn from the random weighted picker. They are placed
+  // deterministically by the demand system when a road sits on a hot
+  // resource cell.
+  {
+    type: 'factory',
+    weight: 0,
+    color: 0x8b3e2f,
+    targetArea: 2500,
+    frontRange: [40, 70],
   },
 ];
 

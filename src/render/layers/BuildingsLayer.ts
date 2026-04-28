@@ -1,5 +1,11 @@
 import { Container, Graphics } from 'pixi.js';
-import type { Building, BuildingId, FailedAttempt, FailedAttemptId } from '@game/buildings';
+import type {
+  Building,
+  BuildingId,
+  BuildingType,
+  FailedAttempt,
+  FailedAttemptId,
+} from '@game/buildings';
 import { BUILDING_COLORS } from '@game/buildings';
 import { useWorldStore } from '@game/store/worldStore';
 
@@ -86,7 +92,7 @@ export class BuildingsLayer {
       const strokeColor = darken(fillColor, 0.55);
       this.buildingNodes.set(
         b.id,
-        this.makeNode(b.poly, b.centroid, strokeColor, fillColor, true),
+        this.makeNode(b.poly, b.centroid, strokeColor, fillColor, true, b.type),
       );
     }
   }
@@ -106,7 +112,7 @@ export class BuildingsLayer {
       if (this.failedNodes.has(f.id)) continue;
       this.failedNodes.set(
         f.id,
-        this.makeNode(f.poly, f.centroid, FAIL_COLOR, FAIL_COLOR, false),
+        this.makeNode(f.poly, f.centroid, FAIL_COLOR, FAIL_COLOR, false, null),
       );
     }
   }
@@ -117,11 +123,13 @@ export class BuildingsLayer {
     strokeColor: number,
     fillColor: number,
     bakeFill: boolean,
+    type: BuildingType | null,
   ): Node {
     const localPoly = makeLocalPoly(poly, centroid);
     const fill = new Graphics();
     if (bakeFill) {
       fill.poly(localPoly).fill({ color: fillColor, alpha: 1 });
+      if (type === 'factory') decorateFactory(fill, localPoly, fillColor);
     }
     fill.alpha = 0;
 
@@ -261,4 +269,39 @@ function darken(color: number, factor: number): number {
   const g = Math.floor(((color >> 8) & 0xff) * factor);
   const b = Math.floor((color & 0xff) * factor);
   return (r << 16) | (g << 8) | b;
+}
+
+// Industrial decoration: a darker inset rectangle inside the factory's local
+// AABB (representing machinery / loading area) plus two small "stack" dots.
+// The rectangle insets by 25% on each axis so it always sits inside the poly
+// for any factory shape produced by the spawner.
+function decorateFactory(g: Graphics, localPoly: number[], fillColor: number): void {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < localPoly.length; i += 2) {
+    const x = localPoly[i];
+    const y = localPoly[i + 1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const insetX = w * 0.25;
+  const insetY = h * 0.25;
+  const dark = darken(fillColor, 0.55);
+  g.rect(minX + insetX, minY + insetY, w - 2 * insetX, h - 2 * insetY).fill({
+    color: dark,
+    alpha: 0.85,
+  });
+  const stackR = Math.min(w, h) * 0.06;
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+  const offset = Math.min(w, h) * 0.18;
+  const stackColor = darken(fillColor, 0.3);
+  g.circle(cx - offset, cy, stackR).fill({ color: stackColor });
+  g.circle(cx + offset, cy, stackR).fill({ color: stackColor });
 }

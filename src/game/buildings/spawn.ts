@@ -1,4 +1,4 @@
-import type { ConsumedFrontage, Graph, GraphEdge } from '@game/graph';
+import type { ConsumedFrontage, EdgeId, Graph, GraphEdge, NodeId } from '@game/graph';
 import type { Building, BuildingType, FailedAttempt } from './';
 import { BUILDING_TYPES, MIN_FRONTAGE_LENGTH } from './';
 import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, sideOffset, type Side } from '@game/roads/geometry';
@@ -27,6 +27,9 @@ const PLACEHOLDER_H = 6;
 interface SpawnContext {
   graph: Graph;
   buildings: Building[];
+  // Optional per-node jobs road-field, used to bias residential frontage
+  // selection toward edges with available jobs.
+  jobsField?: ReadonlyMap<NodeId, number>;
 }
 
 type Rng = () => number;
@@ -37,9 +40,13 @@ type SpawnResult =
 
 function pickType(rand: Rng): BuildingType {
   let total = 0;
-  for (const t of BUILDING_TYPES) total += t.weight;
+  for (const t of BUILDING_TYPES) {
+    if (t.weight <= 0) continue;
+    total += t.weight;
+  }
   let r = rand() * total;
   for (const t of BUILDING_TYPES) {
+    if (t.weight <= 0) continue;
     r -= t.weight;
     if (r <= 0) return t.type;
   }
@@ -63,8 +70,13 @@ interface FrontagePick {
 
 // Picks an (edge, side, interval) weighted by the world-length of free
 // frontage. Intervals shorter than MIN_FRONTAGE_LENGTH can never host any
-// building type and are skipped entirely.
-function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
+// building type and are skipped entirely. An optional per-edge multiplier
+// lets callers bias the pick (e.g. residential favoring high-jobs edges).
+function pickFrontage(
+  graph: Graph,
+  rand: Rng,
+  edgeMultiplier?: (e: GraphEdge) => number,
+): FrontagePick | null {
   let total = 0;
   for (const e of graph.edges.values()) {
     const front = graph.frontages.get(e.id);
@@ -73,13 +85,15 @@ function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
     const b = graph.nodes.get(e.to)!;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 1e-6) continue;
+    const mul = edgeMultiplier ? edgeMultiplier(e) : 1;
+    if (mul <= 0) continue;
     for (const iv of front.left) {
       const w = (iv.t1 - iv.t0) * len;
-      if (w >= MIN_FRONTAGE_LENGTH) total += w;
+      if (w >= MIN_FRONTAGE_LENGTH) total += w * mul;
     }
     for (const iv of front.right) {
       const w = (iv.t1 - iv.t0) * len;
-      if (w >= MIN_FRONTAGE_LENGTH) total += w;
+      if (w >= MIN_FRONTAGE_LENGTH) total += w * mul;
     }
   }
   if (total <= 0) return null;
@@ -91,18 +105,57 @@ function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
     const b = graph.nodes.get(e.to)!;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 1e-6) continue;
+    const mul = edgeMultiplier ? edgeMultiplier(e) : 1;
+    if (mul <= 0) continue;
     for (const iv of front.left) {
       const w = (iv.t1 - iv.t0) * len;
       if (w < MIN_FRONTAGE_LENGTH) continue;
-      r -= w;
+      r -= w * mul;
       if (r <= 0) return { edge: e, side: 'left', t0: iv.t0, t1: iv.t1 };
     }
     for (const iv of front.right) {
       const w = (iv.t1 - iv.t0) * len;
       if (w < MIN_FRONTAGE_LENGTH) continue;
-      r -= w;
+      r -= w * mul;
       if (r <= 0) return { edge: e, side: 'right', t0: iv.t0, t1: iv.t1 };
     }
+  }
+  return null;
+}
+
+// Same as pickFrontage but restricted to a single edge. Used for
+// deterministic placement of factories on specific edges.
+function pickFrontageOnEdge(graph: Graph, edgeId: EdgeId, rand: Rng): FrontagePick | null {
+  const e = graph.edges.get(edgeId);
+  if (!e) return null;
+  const front = graph.frontages.get(edgeId);
+  if (!front) return null;
+  const a = graph.nodes.get(e.from)!;
+  const b = graph.nodes.get(e.to)!;
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 1e-6) return null;
+  let total = 0;
+  for (const iv of front.left) {
+    const w = (iv.t1 - iv.t0) * len;
+    if (w >= MIN_FRONTAGE_LENGTH) total += w;
+  }
+  for (const iv of front.right) {
+    const w = (iv.t1 - iv.t0) * len;
+    if (w >= MIN_FRONTAGE_LENGTH) total += w;
+  }
+  if (total <= 0) return null;
+  let r = rand() * total;
+  for (const iv of front.left) {
+    const w = (iv.t1 - iv.t0) * len;
+    if (w < MIN_FRONTAGE_LENGTH) continue;
+    r -= w;
+    if (r <= 0) return { edge: e, side: 'left', t0: iv.t0, t1: iv.t1 };
+  }
+  for (const iv of front.right) {
+    const w = (iv.t1 - iv.t0) * len;
+    if (w < MIN_FRONTAGE_LENGTH) continue;
+    r -= w;
+    if (r <= 0) return { edge: e, side: 'right', t0: iv.t0, t1: iv.t1 };
   }
   return null;
 }
@@ -189,11 +242,47 @@ export function trySpawn(
   simTime: number,
   rand: Rng,
 ): SpawnResult | null {
-  const pick = pickFrontage(ctx.graph, rand);
+  const typeName = pickType(rand);
+  // Residential picks are weighted by jobs supply on each edge: zero-jobs
+  // edges never attract houses. Other types fall back to plain width-weighted
+  // frontage selection.
+  const isResidential = typeName === 'small_house';
+  const weightFn =
+    isResidential && ctx.jobsField
+      ? (e: GraphEdge): number => {
+          const va = ctx.jobsField!.get(e.from) ?? 0;
+          const vb = ctx.jobsField!.get(e.to) ?? 0;
+          return (va + vb) * 0.5;
+        }
+      : undefined;
+  const pick = pickFrontage(ctx.graph, rand, weightFn);
   if (!pick) {
-    console.log('[spawn] fail: no_frontage');
+    console.log('[spawn] fail: no_frontage', { type: typeName });
     return null;
   }
+  return placeBuildingOnFrontage(ctx, pick, typeName, simTime, rand);
+}
+
+// Deterministic placement of a factory on a specific edge. Used by the
+// demand system when the resource cell map is hot under that edge.
+export function trySpawnFactoryOnEdge(
+  ctx: SpawnContext,
+  edgeId: EdgeId,
+  simTime: number,
+  rand: Rng,
+): SpawnResult | null {
+  const pick = pickFrontageOnEdge(ctx.graph, edgeId, rand);
+  if (!pick) return null;
+  return placeBuildingOnFrontage(ctx, pick, 'factory', simTime, rand);
+}
+
+function placeBuildingOnFrontage(
+  ctx: SpawnContext,
+  pick: FrontagePick,
+  typeName: BuildingType,
+  simTime: number,
+  rand: Rng,
+): SpawnResult {
   const { edge, side: pickSide, t0: ivT0, t1: ivT1 } = pick;
 
   const from = ctx.graph.nodes.get(edge.from)!;
@@ -213,7 +302,6 @@ export function trySpawn(
   const halfRoad = ROAD_HALF_WIDTH[edge.kind];
   const clearance = halfRoad + EDGE_CLEARANCE;
 
-  const typeName = pickType(rand);
   const typeDef = BUILDING_TYPES.find((td) => td.type === typeName)!;
   const [frontMin, frontMax] = typeDef.frontRange;
   // Sampled per spawn for types with targetAreaRange (parks). For fixed-area

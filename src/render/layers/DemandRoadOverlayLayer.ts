@@ -72,8 +72,10 @@ export class DemandRoadOverlayLayer {
       const vb = map.roadField.get(b.id) ?? 0;
       if (va < 1e-3 && vb < 1e-3) continue;
 
-      map.palette(Math.min(1, va), colorScratchA, 0);
-      map.palette(Math.min(1, vb), colorScratchB, 0);
+      // Each map's palette is responsible for its own value range / clamping.
+      // Resource is already 0..1; jobs scales internally by JOB_SUPPLY.
+      map.palette(va, colorScratchA, 0);
+      map.palette(vb, colorScratchB, 0);
 
       const baseW =
         e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
