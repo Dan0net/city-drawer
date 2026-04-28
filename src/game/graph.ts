@@ -4,7 +4,7 @@ export type NodeId = number;
 export type EdgeId = number;
 export type EdgeKind = 'road' | 'small_road' | 'path';
 
-export interface GraphNode {
+interface GraphNode {
   id: NodeId;
   x: number;
   y: number;
@@ -18,7 +18,7 @@ export interface GraphEdge {
   kind: EdgeKind;
 }
 
-export interface Interval {
+interface Interval {
   t0: number;
   t1: number;
 }
@@ -26,7 +26,7 @@ export interface Interval {
 // Free intervals on each side of an edge, in normalized [0..1] along from→to.
 // "left" = perpendicular (-ty, +tx), "right" = (+ty, -tx). Buildings consume
 // portions of these as they spawn (later step).
-export interface FrontageSides {
+interface FrontageSides {
   left: Interval[];
   right: Interval[];
 }

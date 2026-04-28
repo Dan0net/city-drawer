@@ -1,15 +1,10 @@
 import type { ConsumedFrontage, Graph, GraphEdge } from './graph';
 import type { Building, BuildingType, FailedAttempt } from './buildings';
-import {
-  BUILDING_TYPES,
-  MIN_FRONTAGE_LENGTH,
-  aabbContainsPoint,
-  pointInPoly,
-  polyAabb,
-  polyArea,
-  polyCentroid,
-} from './buildings';
+import { BUILDING_TYPES, MIN_FRONTAGE_LENGTH } from './buildings';
 import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, sideOffset, type Side } from './roadGeometry';
+import { aabbContainsPoint } from '@lib/aabb';
+import { pointInPoly, polyAabb, polyArea, polyCentroid } from '@lib/poly';
+import { rayHitOBB, rayHitPolygon } from '@lib/raycast';
 const SLICE_STEP = 1;
 const MIN_DEPTH = 4;
 const MAX_DEPTH = 50;
@@ -29,18 +24,18 @@ const SLIVER_GAP = 5;
 const PLACEHOLDER_W = 5;
 const PLACEHOLDER_H = 6;
 
-export interface SpawnContext {
+interface SpawnContext {
   graph: Graph;
   buildings: Building[];
 }
 
-export type Rng = () => number;
+type Rng = () => number;
 
-export type SpawnResult =
+type SpawnResult =
   | { kind: 'success'; building: Omit<Building, 'id'> }
   | { kind: 'failure'; failure: Omit<FailedAttempt, 'id'> };
 
-export function pickType(rand: Rng): BuildingType {
+function pickType(rand: Rng): BuildingType {
   let total = 0;
   for (const t of BUILDING_TYPES) total += t.weight;
   let r = rand() * total;
@@ -59,7 +54,7 @@ function sampleTargetArea(td: (typeof BUILDING_TYPES)[number], rand: Rng): numbe
   return td.targetArea;
 }
 
-export interface FrontagePick {
+interface FrontagePick {
   edge: GraphEdge;
   side: Side;
   t0: number;
@@ -69,7 +64,7 @@ export interface FrontagePick {
 // Picks an (edge, side, interval) weighted by the world-length of free
 // frontage. Intervals shorter than MIN_FRONTAGE_LENGTH can never host any
 // building type and are skipped entirely.
-export function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
+function pickFrontage(graph: Graph, rand: Rng): FrontagePick | null {
   let total = 0;
   for (const e of graph.edges.values()) {
     const front = graph.frontages.get(e.id);
@@ -578,8 +573,6 @@ function makePlaceholder(
   };
 }
 
-// ---------- raycasts ----------
-
 function freeDepthAt(
   ctx: SpawnContext,
   ox: number,
@@ -638,102 +631,3 @@ function freeDepthAt(
   return best;
 }
 
-function rayHitOBB(
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-  cx: number,
-  cy: number,
-  w: number,
-  h: number,
-  rot: number,
-  maxT: number,
-): number {
-  const c = Math.cos(-rot);
-  const s = Math.sin(-rot);
-  const tx = ox - cx;
-  const ty = oy - cy;
-  const lx = tx * c - ty * s;
-  const ly = tx * s + ty * c;
-  const ldx = dx * c - dy * s;
-  const ldy = dx * s + dy * c;
-
-  const hw = w / 2;
-  const hh = h / 2;
-
-  if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) return 0;
-
-  let tmin = -Infinity;
-  let tmax = Infinity;
-
-  if (Math.abs(ldx) < 1e-9) {
-    if (lx < -hw || lx > hw) return Infinity;
-  } else {
-    const t1 = (-hw - lx) / ldx;
-    const t2 = (hw - lx) / ldx;
-    tmin = Math.max(tmin, Math.min(t1, t2));
-    tmax = Math.min(tmax, Math.max(t1, t2));
-    if (tmin > tmax) return Infinity;
-  }
-  if (Math.abs(ldy) < 1e-9) {
-    if (ly < -hh || ly > hh) return Infinity;
-  } else {
-    const t1 = (-hh - ly) / ldy;
-    const t2 = (hh - ly) / ldy;
-    tmin = Math.max(tmin, Math.min(t1, t2));
-    tmax = Math.min(tmax, Math.max(t1, t2));
-    if (tmin > tmax) return Infinity;
-  }
-
-  if (tmin < 0 || tmin > maxT) return Infinity;
-  return tmin;
-}
-
-function rayHitPolygon(
-  poly: number[],
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-  maxT: number,
-): number {
-  let best = maxT;
-  const n = poly.length / 2;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const t = rayHitSegment(
-      ox,
-      oy,
-      dx,
-      dy,
-      poly[2 * i],
-      poly[2 * i + 1],
-      poly[2 * j],
-      poly[2 * j + 1],
-    );
-    if (t > 0 && t < best) best = t;
-  }
-  return best;
-}
-
-function rayHitSegment(
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-): number {
-  const ex = x1 - x0;
-  const ey = y1 - y0;
-  const denom = dx * ey - dy * ex;
-  if (Math.abs(denom) < 1e-9) return Infinity;
-  const inv = 1 / denom;
-  const t = ((x0 - ox) * ey - (y0 - oy) * ex) * inv;
-  const s = ((x0 - ox) * dy - (y0 - oy) * dx) * inv;
-  if (t < 0 || s < 0 || s > 1) return Infinity;
-  return t;
-}

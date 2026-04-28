@@ -1,6 +1,6 @@
 import { Application, Container } from 'pixi.js';
 
-export interface PixiAppHandle {
+interface PixiAppHandle {
   app: Application;
   world: Container; // transformed by viewport
   overlay: Container; // screen-space overlays (debug, ghost in screen-coords if needed)

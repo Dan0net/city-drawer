@@ -2,10 +2,12 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { aabbContainsPoint, pointInPoly, polyOverlapsObb } from '@game/buildings';
 import { sideOffset } from '@game/roadGeometry';
 import { trySpawn } from '@game/spawn';
 import { useUiStore } from '@game/store/uiStore';
+import { aabbContainsPoint } from '@lib/aabb';
+import { wrapPi } from '@lib/math';
+import { pointInPoly, polyOverlapsObb } from '@lib/poly';
 
 const SNAP_ANGLE_STEP = Math.PI / 4; // 45°
 // Soft angle snap: only engage when the cursor is within this many radians
@@ -15,17 +17,17 @@ const SNAP_LENGTH_STEP = 10; // m
 
 export type Tool = 'none' | 'road' | 'small_road' | 'path' | 'bulldoze';
 
-export type SnapResult =
+type SnapResult =
   | { kind: 'node'; nodeId: NodeId; x: number; y: number }
   | { kind: 'edge'; edgeId: EdgeId; t: number; x: number; y: number }
   | { kind: 'free'; x: number; y: number };
 
-export type BulldozeHover =
+type BulldozeHover =
   | { kind: 'edge'; id: EdgeId }
   | { kind: 'node'; id: NodeId }
   | { kind: 'building'; id: BuildingId };
 
-export interface WorldState {
+interface WorldState {
   graph: Graph;
   graphVersion: number;
   buildings: Building[];
@@ -99,13 +101,6 @@ const referenceAngles = (graph: Graph, start: SnapResult): number[] => {
     return [Math.atan2(b.y - a.y, b.x - a.x)];
   }
   return [0];
-};
-
-const wrapPi = (a: number): number => {
-  let d = a;
-  while (d > Math.PI) d -= 2 * Math.PI;
-  while (d < -Math.PI) d += 2 * Math.PI;
-  return d;
 };
 
 const applyDrawSnap = (graph: Graph, start: SnapResult, raw: SnapResult): SnapResult => {

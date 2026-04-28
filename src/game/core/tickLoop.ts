@@ -1,16 +1,16 @@
 // Fixed-step accumulator tick loop, decoupled from rAF.
 // Phase 0: scaffold only — no-op ticks. Wired in so later phases plug their sim work in.
 
-export type TickFn = (dt: number, tick: number) => void;
+type TickFn = (dt: number, tick: number) => void;
 
-export interface TickLoop {
+interface TickLoop {
   start(): void;
   stop(): void;
   subscribe(fn: TickFn): () => void;
   get tick(): number;
 }
 
-export interface TickLoopOptions {
+interface TickLoopOptions {
   hz?: number;
   // Cap iterations per outer schedule call so a long pause doesn't cause a death-spiral.
   maxStepsPerSchedule?: number;

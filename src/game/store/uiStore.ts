@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export interface UiState {
+interface UiState {
   showGrid: boolean;
   showFps: boolean;
   showFrontages: boolean;

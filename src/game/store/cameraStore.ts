@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { clamp } from '@lib/math';
 
-export const ZOOM_MIN = 0.05;
-export const ZOOM_MAX = 16;
+const ZOOM_MIN = 0.05;
+const ZOOM_MAX = 16;
 
-export interface CameraState {
+interface CameraState {
   // World coordinate at the screen center
   cx: number;
   cy: number;

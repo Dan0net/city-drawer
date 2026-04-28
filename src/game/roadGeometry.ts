@@ -1,4 +1,5 @@
 import type { EdgeId, EdgeKind, Graph } from './graph';
+import type { Vec2 } from '@lib/math';
 
 export const ROAD_HALF_WIDTH: Record<EdgeKind, number> = {
   road: 4,
@@ -8,7 +9,7 @@ export const ROAD_HALF_WIDTH: Record<EdgeKind, number> = {
 export const EDGE_CLEARANCE = 0.5;
 
 export type Side = 'left' | 'right';
-export type EdgeEnd = 'from' | 'to';
+type EdgeEnd = 'from' | 'to';
 
 export function sideOffset(kind: EdgeKind): number {
   return ROAD_HALF_WIDTH[kind] + EDGE_CLEARANCE;
@@ -22,21 +23,15 @@ export function sideNormal(
   return side === 'left' ? { nx: -ty, ny: tx } : { nx: ty, ny: -tx };
 }
 
-export interface CornerPoint {
-  x: number;
-  y: number;
-}
-
-// Caps the miter when an outside corner is very acute, to avoid the offset
-// shooting off to infinity. Measured in multiples of the edge's side offset.
+// Cap miter on acute outside corners to keep the offset from blowing up.
+// Multiples of the edge's side offset.
 const MITER_LIMIT = 6;
 
-// At every node, miter the offset polylines of incident edges so that on
-// inside corners they retract to meet, and on outside corners they extend
-// to meet. Returns a map keyed by `${edgeId}:${side}:${end}` (where end is
-// 'from' or 'to'). Edges at degree-1 nodes get no override at that end.
-export function computeFrontageCorners(graph: Graph): Map<string, CornerPoint> {
-  const out = new Map<string, CornerPoint>();
+// Miters offset polylines at every node so inside corners retract and outside
+// corners extend to meet. Keyed by `${edgeId}:${side}:${end}`. Degree-1 ends
+// get no entry.
+export function computeFrontageCorners(graph: Graph): Map<string, Vec2> {
+  const out = new Map<string, Vec2>();
 
   for (const node of graph.nodes.values()) {
     if (node.edges.size < 2) continue;

@@ -3,9 +3,13 @@ export interface Vec2 {
   y: number;
 }
 
-export const vec2 = (x: number, y: number): Vec2 => ({ x, y });
-
 export const clamp = (v: number, lo: number, hi: number): number =>
   v < lo ? lo : v > hi ? hi : v;
 
-export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+// Wrap an angle to (-π, π].
+export const wrapPi = (a: number): number => {
+  let d = a;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+};
