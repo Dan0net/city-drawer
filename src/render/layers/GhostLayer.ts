@@ -20,7 +20,7 @@ export class GhostLayer {
   }
 
   update(): void {
-    const { tool, drawingStart, snap, pointerWorld, drawingCrossings } =
+    const { tool, drawingStart, snap, pointerWorld, drawingCrossings, drawingMidpoints } =
       useWorldStore.getState();
     const { zoom } = useCameraStore.getState();
     const g = this.g;
@@ -36,13 +36,18 @@ export class GhostLayer {
       g.stroke({ width, color: GHOST_COLOR, alpha: 0.55, cap: 'round' });
     }
 
-    // Crossings — preview where new nodes will appear when the line commits.
-    if (drawingStart && drawingCrossings.length > 0) {
+    // Crossings + auto-subdivision midpoints — preview where new nodes will
+    // appear when the line commits. Same visual for both.
+    if (drawingStart && (drawingCrossings.length > 0 || drawingMidpoints.length > 0)) {
       const r = 5 / zoom;
       const strokeW = 1.5 / zoom;
       for (const c of drawingCrossings) {
         g.circle(c.x, c.y, r).fill({ color: SNAP_NODE_COLOR, alpha: 0.85 });
         g.circle(c.x, c.y, r).stroke({ width: strokeW, color: 0x0b0e13, alpha: 0.9 });
+      }
+      for (const m of drawingMidpoints) {
+        g.circle(m.x, m.y, r).fill({ color: SNAP_NODE_COLOR, alpha: 0.85 });
+        g.circle(m.x, m.y, r).stroke({ width: strokeW, color: 0x0b0e13, alpha: 0.9 });
       }
     }
 
