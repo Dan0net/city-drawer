@@ -24,12 +24,23 @@ export interface Building {
   // remaining (jobsTotal - jobsFilled) along the graph with decay.
   jobsTotal?: number;
   jobsFilled?: number;
-  // House-only: id of the factory whose `jobsFilled` this house counts
-  // toward. Decremented on bulldoze.
-  attributedFactoryId?: BuildingId;
+  // House-only: how many shops / parks this house has been attributed to.
+  // Each demand map broadcasts `(TOTAL - filled)` per house.
+  commercialFilled?: number;
+  leisureFilled?: number;
+  // Consumer-side attribution: ids of the buildings this one counts toward.
+  // Houses attribute to a single factory (one element); a shop attributes
+  // to SHOP_HOUSES_SERVED nearby houses; a park attributes to
+  // PARK_HOUSES_SERVED. Decrement-on-bulldoze loops over all entries and
+  // branches on the removed building's type to pick the right counter.
+  attributedToIds?: BuildingId[];
 }
 
 export const JOBS_PER_FACTORY = 8;
+export const HOUSE_COMMERCIAL_TOTAL = 1;
+export const HOUSE_LEISURE_TOTAL = 1;
+export const SHOP_HOUSES_SERVED = 10;
+export const PARK_HOUSES_SERVED = 20;
 
 // Rejected spawn attempt. Rendered as a red ghost then pruned. Diagnostic.
 export interface FailedAttempt {

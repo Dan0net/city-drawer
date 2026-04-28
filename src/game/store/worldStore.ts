@@ -2,7 +2,13 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { JOBS_PER_FACTORY } from '@game/buildings';
+import {
+  HOUSE_COMMERCIAL_TOTAL,
+  HOUSE_LEISURE_TOTAL,
+  JOBS_PER_FACTORY,
+  PARK_HOUSES_SERVED,
+  SHOP_HOUSES_SERVED,
+} from '@game/buildings';
 import { pickFrontageOnEdge, placeBuildingOnFrontage } from '@game/buildings/spawn';
 import { clearCellsUnderPoly } from '@game/demand/cellMap';
 import { useUiStore } from '@game/store/uiStore';
@@ -421,7 +427,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
 
       if (newSimTime >= nextSpawnAt) {
         const pick = pickHighestDemand(s, Math.random);
-        if (pick) {
+        if (pick && hasEnoughDemand(s, pick)) {
           const front = pickFrontageOnEdge(s.graph, pick.edgeId, Math.random);
           if (front) {
             const result = placeBuildingOnFrontage(
@@ -445,14 +451,36 @@ export const useWorldStore = create<WorldState>((set, get) => {
                   );
                 }
               } else if (pick.kind === 'small_house') {
-                const f = nearestFactoryWithCapacity(
+                const factories = nearestBuildingsWithSlot(
                   s.graph,
                   s.buildings,
                   newBuilding.centroid,
+                  (b) =>
+                    b.type === 'factory' && (b.jobsFilled ?? 0) < (b.jobsTotal ?? 0),
+                  1,
                 );
-                if (f) {
-                  newBuilding.attributedFactoryId = f.id;
+                if (factories.length > 0) {
+                  const f = factories[0];
+                  newBuilding.attributedToIds = [f.id];
                   f.jobsFilled = (f.jobsFilled ?? 0) + 1;
+                }
+              } else if (pick.kind === 'shop' || pick.kind === 'park') {
+                const isShop = pick.kind === 'shop';
+                const houses = nearestBuildingsWithSlot(
+                  s.graph,
+                  s.buildings,
+                  newBuilding.centroid,
+                  (b) =>
+                    b.type === 'small_house' &&
+                    (isShop
+                      ? (b.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL
+                      : (b.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL),
+                  isShop ? SHOP_HOUSES_SERVED : PARK_HOUSES_SERVED,
+                );
+                newBuilding.attributedToIds = houses.map((h) => h.id);
+                for (const h of houses) {
+                  if (isShop) h.commercialFilled = (h.commercialFilled ?? 0) + 1;
+                  else h.leisureFilled = (h.leisureFilled ?? 0) + 1;
                 }
               }
               s.buildings.push(newBuilding);
@@ -520,57 +548,69 @@ export const useWorldStore = create<WorldState>((set, get) => {
 }
 
 // ---------- demand-driven spawn picker ----------
-
-// Houses fill jobs while any edge has positive jobs road-field. Once the
-// world's jobs are fully filled (every factory at capacity), the picker
-// falls through to factories on hot resource edges. Resource is gated by
-// a small threshold so very faint road-field tails don't trigger spawns.
 //
-// Within each tier the pick is weighted-random by score, not argmax — so
-// hot edges are preferred but lukewarm ones still get occasional houses,
-// and a failed placement on the hottest edge doesn't lock the loop.
+// Tier 1: houses, shops, parks compete in a single weighted pool. Their raw
+// road-field scores are different magnitudes (jobs scales 0..8, services 0..2),
+// so jobs dominates while there's slack for new houses; once houses settle in,
+// commercial/leisure scores grow and shops/parks start winning. Score-scale
+// drives the priority — no explicit gating between them.
+// Tier 2 (fallback): factories on hot resource edges, only when no tier-1
+// demand exists anywhere — this enforces the original "fill jobs before
+// building the next factory" loop.
 const RESOURCE_FACTORY_THRESHOLD = 0.2;
-type DemandPick = { kind: 'small_house' | 'factory'; edgeId: EdgeId; score: number };
+const COMMERCIAL_THRESHOLD = 1.5;
+const LEISURE_THRESHOLD = 1.5;
+type DemandKind = 'small_house' | 'shop' | 'park' | 'factory';
+type DemandPick = { kind: DemandKind; edgeId: EdgeId; score: number };
 
 function pickHighestDemand(s: WorldState, rand: () => number): DemandPick | null {
-  const jobsMap = s.demandMaps.find((m) => m.id === 'jobs');
-  if (jobsMap) {
-    const housePick = weightedDemandPick(s, jobsMap.roadField, 'small_house', 0, rand);
-    if (housePick) return housePick;
+  // Count houses with slack so we can exclude shop/park tiers entirely when
+  // the world can't fulfil a 1:N attribution. Without this, a tier-1 pool
+  // full of unfulfillable shop/park candidates blocks tier-2 (factory) from
+  // ever running.
+  let commercialSlack = 0;
+  let leisureSlack = 0;
+  for (const b of s.buildings) {
+    if (b.type !== 'small_house') continue;
+    if ((b.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL) commercialSlack++;
+    if ((b.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL) leisureSlack++;
   }
-  const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
-  if (resourceMap) {
-    const factoryPick = weightedDemandPick(
-      s,
-      resourceMap.roadField,
-      'factory',
-      RESOURCE_FACTORY_THRESHOLD,
-      rand,
-    );
-    if (factoryPick) return factoryPick;
+
+  const candidates: DemandPick[] = [];
+  let total = 0;
+  const accumulate = (kind: DemandKind, mapId: string, threshold: number): void => {
+    const map = s.demandMaps.find((m) => m.id === mapId);
+    if (!map) return;
+    for (const e of s.graph.edges.values()) {
+      const va = map.roadField.get(e.from) ?? 0;
+      const vb = map.roadField.get(e.to) ?? 0;
+      const v = (va + vb) * 0.5;
+      if (v > threshold) {
+        candidates.push({ kind, edgeId: e.id, score: v });
+        total += v;
+      }
+    }
+  };
+  accumulate('small_house', 'jobs', 0);
+  if (commercialSlack >= SHOP_HOUSES_SERVED) {
+    accumulate('shop', 'commercial', COMMERCIAL_THRESHOLD);
   }
+  if (leisureSlack >= PARK_HOUSES_SERVED) {
+    accumulate('park', 'leisure', LEISURE_THRESHOLD);
+  }
+  if (total > 0) return rouletteOne(candidates, total, rand);
+
+  // Tier 2 — only if nothing in tier 1.
+  accumulate('factory', 'resource', RESOURCE_FACTORY_THRESHOLD);
+  if (total > 0) return rouletteOne(candidates, total, rand);
   return null;
 }
 
-function weightedDemandPick(
-  s: WorldState,
-  field: ReadonlyMap<NodeId, number>,
-  kind: DemandPick['kind'],
-  threshold: number,
+function rouletteOne(
+  candidates: DemandPick[],
+  total: number,
   rand: () => number,
-): DemandPick | null {
-  const candidates: DemandPick[] = [];
-  let total = 0;
-  for (const e of s.graph.edges.values()) {
-    const va = field.get(e.from) ?? 0;
-    const vb = field.get(e.to) ?? 0;
-    const v = (va + vb) * 0.5;
-    if (v > threshold) {
-      candidates.push({ kind, edgeId: e.id, score: v });
-      total += v;
-    }
-  }
-  if (total <= 0) return null;
+): DemandPick {
   let r = rand() * total;
   for (const c of candidates) {
     r -= c.score;
@@ -579,32 +619,48 @@ function weightedDemandPick(
   return candidates[candidates.length - 1];
 }
 
-// Closest factory (graph-distance) with a free job slot, starting from the
-// node nearest the house's centroid. Returns null if no factory has slack
-// in the connected component.
-const FACTORY_NEAREST_RADIUS = 96;
+// Up to `max` buildings (graph-distance from `center`) matching `filter`,
+// in distance order. Used by the spawner to attribute one factory to a
+// house, or N houses to a shop / park. Multiple candidate buildings may
+// share the same nearest node (a cluster of houses on one node), so the
+// per-node bucket is a list, not a single entry.
+const ATTRIBUTION_NEAREST_RADIUS = 96;
 
-function nearestFactoryWithCapacity(
+function nearestBuildingsWithSlot(
   graph: Graph,
   buildings: Building[],
   center: { x: number; y: number },
-): Building | null {
-  const start = graph.nearestNode(center.x, center.y, FACTORY_NEAREST_RADIUS);
-  if (!start) return null;
-  const factoryByNode = new Map<NodeId, Building>();
+  filter: (b: Building) => boolean,
+  max: number,
+): Building[] {
+  const out: Building[] = [];
+  if (max <= 0) return out;
+  const start = graph.nearestNode(center.x, center.y, ATTRIBUTION_NEAREST_RADIUS);
+  if (!start) return out;
+  const candidatesByNode = new Map<NodeId, Building[]>();
   for (const b of buildings) {
-    if (b.type !== 'factory') continue;
-    if ((b.jobsFilled ?? 0) >= (b.jobsTotal ?? 0)) continue;
-    const fn = graph.nearestNode(b.centroid.x, b.centroid.y, FACTORY_NEAREST_RADIUS);
-    if (fn) factoryByNode.set(fn.id, b);
+    if (!filter(b)) continue;
+    const n = graph.nearestNode(b.centroid.x, b.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
+    if (!n) continue;
+    let bucket = candidatesByNode.get(n.id);
+    if (!bucket) {
+      bucket = [];
+      candidatesByNode.set(n.id, bucket);
+    }
+    bucket.push(b);
   }
-  if (factoryByNode.size === 0) return null;
+  if (candidatesByNode.size === 0) return out;
   const visited = new Set<NodeId>([start.id]);
   const queue: NodeId[] = [start.id];
-  while (queue.length > 0) {
+  while (queue.length > 0 && out.length < max) {
     const n = queue.shift()!;
-    const f = factoryByNode.get(n);
-    if (f) return f;
+    const bucket = candidatesByNode.get(n);
+    if (bucket) {
+      for (const b of bucket) {
+        out.push(b);
+        if (out.length >= max) return out;
+      }
+    }
     const node = graph.nodes.get(n);
     if (!node) continue;
     for (const eid of node.edges) {
@@ -617,5 +673,25 @@ function nearestFactoryWithCapacity(
       }
     }
   }
-  return null;
+  return out;
+}
+
+// Pre-spawn gate: only allow shop/park to spawn if enough houses with slack
+// are reachable from the candidate edge. Without this, a shop spawns on
+// thin demand and only attributes to a few houses, breaking the 1:N ratio.
+function hasEnoughDemand(s: WorldState, pick: DemandPick): boolean {
+  if (pick.kind !== 'shop' && pick.kind !== 'park') return true;
+  const e = s.graph.edges.get(pick.edgeId);
+  if (!e) return false;
+  const a = s.graph.nodes.get(e.from)!;
+  const b = s.graph.nodes.get(e.to)!;
+  const center = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
+  const isShop = pick.kind === 'shop';
+  const filter = (x: Building): boolean =>
+    x.type === 'small_house' &&
+    (isShop
+      ? (x.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL
+      : (x.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL);
+  const need = isShop ? SHOP_HOUSES_SERVED : PARK_HOUSES_SERVED;
+  return nearestBuildingsWithSlot(s.graph, s.buildings, center, filter, need).length >= need;
 }

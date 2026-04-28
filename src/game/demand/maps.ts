@@ -1,6 +1,6 @@
 import type { Graph } from '@game/graph';
 import type { Building } from '@game/buildings';
-import { JOBS_PER_FACTORY } from '@game/buildings';
+import { HOUSE_COMMERCIAL_TOTAL, HOUSE_LEISURE_TOTAL, JOBS_PER_FACTORY } from '@game/buildings';
 import { createCellMap, type CellMap } from './cellMap';
 import { createRoadField, type RoadField } from './roadField';
 import { bfsDecay, sampleCellsToRoadField, splatRoadFieldToCells } from './compute';
@@ -110,6 +110,79 @@ function createJobsMap(): DemandMap {
   };
 }
 
+// Commercial / leisure: each house broadcasts (TOTAL - filled) along the
+// graph with decay, the same way factories do for jobs. Shops consume
+// commercial slots, parks consume leisure slots.
+const SERVICE_DECAY = 0.7;
+
+const commercialPalette: Palette = (v, out, o) => {
+  // Indigo — distinct from teal jobs and ochre resource.
+  const k = Math.max(0, Math.min(1, v / 2));
+  out[o] = Math.round(60 + 60 * k);
+  out[o + 1] = Math.round(60 + 80 * k);
+  out[o + 2] = Math.round(140 + 100 * k);
+  out[o + 3] = Math.round(220 * k);
+};
+
+const leisurePalette: Palette = (v, out, o) => {
+  // Mossy green — distinct from the other three.
+  const k = Math.max(0, Math.min(1, v / 2));
+  out[o] = Math.round(60 + 70 * k);
+  out[o + 1] = Math.round(120 + 80 * k);
+  out[o + 2] = Math.round(70 + 60 * k);
+  out[o + 3] = Math.round(220 * k);
+};
+
+function createServiceDemandMap(
+  id: string,
+  label: string,
+  palette: Palette,
+  totalPerHouse: number,
+  filledOf: (b: { commercialFilled?: number; leisureFilled?: number }) => number,
+): DemandMap {
+  const cellMap = createCellMap(GRID_RES, GRID_RES, CELL_SIZE, WORLD_MIN, WORLD_MIN);
+  const roadField = createRoadField();
+  const NEAREST_RADIUS = CELL_SIZE * 6;
+  const SPLAT_RADIUS = CELL_SIZE * 3;
+  return {
+    id,
+    label,
+    kind: 'graph-sourced',
+    palette,
+    cellMap,
+    roadField,
+    recompute(ctx) {
+      roadField.clear();
+      for (const b of ctx.buildings) {
+        if (b.type !== 'small_house') continue;
+        const remaining = totalPerHouse - filledOf(b);
+        if (remaining <= 0) continue;
+        const node = ctx.graph.nearestNode(b.centroid.x, b.centroid.y, NEAREST_RADIUS);
+        if (!node) continue;
+        bfsDecay(ctx.graph, node.id, remaining, SERVICE_DECAY, roadField);
+      }
+      splatRoadFieldToCells(roadField, ctx.graph, cellMap, SPLAT_RADIUS);
+    },
+  };
+}
+
 export function createDemandMaps(seed: number): DemandMap[] {
-  return [createResourceMap(seed), createJobsMap()];
+  return [
+    createResourceMap(seed),
+    createJobsMap(),
+    createServiceDemandMap(
+      'commercial',
+      'commercial',
+      commercialPalette,
+      HOUSE_COMMERCIAL_TOTAL,
+      (b) => b.commercialFilled ?? 0,
+    ),
+    createServiceDemandMap(
+      'leisure',
+      'leisure',
+      leisurePalette,
+      HOUSE_LEISURE_TOTAL,
+      (b) => b.leisureFilled ?? 0,
+    ),
+  ];
 }

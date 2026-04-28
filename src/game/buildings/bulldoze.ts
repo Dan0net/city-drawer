@@ -50,8 +50,9 @@ export const buildingsWithPrimaryOn = (
 
 // Removes a single building, restoring its consumed frontages on every edge
 // other than `excludeEdgeIds` (which we're about to delete). If the removed
-// building was a house attributed to a factory, frees that factory's job
-// slot. Returns true if any frontage was actually restored.
+// building was attributed to another (house→factory, shop→house, park→house),
+// decrements the appropriate counter on the attributed-to building. Returns
+// true if any frontage was actually restored.
 export const removeBuildingRestoring = (
   graph: Graph,
   buildings: Building[],
@@ -62,9 +63,18 @@ export const removeBuildingRestoring = (
   if (idx < 0) return false;
   const b = buildings[idx];
   buildings.splice(idx, 1);
-  if (b.attributedFactoryId != null) {
-    const f = buildings.find((x) => x.id === b.attributedFactoryId);
-    if (f && f.jobsFilled != null && f.jobsFilled > 0) f.jobsFilled--;
+  if (b.attributedToIds) {
+    for (const id of b.attributedToIds) {
+      const target = buildings.find((x) => x.id === id);
+      if (!target) continue;
+      if (b.type === 'small_house' && target.jobsFilled != null && target.jobsFilled > 0) {
+        target.jobsFilled--;
+      } else if (b.type === 'shop' && target.commercialFilled != null && target.commercialFilled > 0) {
+        target.commercialFilled--;
+      } else if (b.type === 'park' && target.leisureFilled != null && target.leisureFilled > 0) {
+        target.leisureFilled--;
+      }
+    }
   }
   let restored = false;
   for (const c of b.consumed) {
