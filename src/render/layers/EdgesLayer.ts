@@ -101,6 +101,17 @@ export class EdgesLayer {
     } else {
       const n = graph.nodes.get(bulldozeHover.id);
       if (!n) return;
+      // Removing the node also removes every incident edge — highlight them all.
+      for (const eid of n.edges) {
+        const e = graph.edges.get(eid);
+        if (!e) continue;
+        const a = graph.nodes.get(e.from)!;
+        const b = graph.nodes.get(e.to)!;
+        const baseW =
+          e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
+        this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
+        this.hover.stroke({ width: baseW + 3, color: BULLDOZE_COLOR, alpha: 0.55, cap: 'round' });
+      }
       this.hover.circle(n.x, n.y, ROAD_WIDTH).fill({ color: BULLDOZE_COLOR, alpha: 0.6 });
     }
   }
