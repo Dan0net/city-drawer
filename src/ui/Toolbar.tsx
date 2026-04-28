@@ -50,6 +50,8 @@ export function Toolbar() {
   const toggleGrid = useUiStore((s) => s.toggleGrid);
   const showFrontages = useUiStore((s) => s.showFrontages);
   const toggleFrontages = useUiStore((s) => s.toggleFrontages);
+  const snapDraw = useUiStore((s) => s.snapDraw);
+  const toggleSnapDraw = useUiStore((s) => s.toggleSnapDraw);
   const reset = useCameraStore((s) => s.reset);
   const clearAll = useWorldStore((s) => s.clearAll);
   const clearBuildings = useWorldStore((s) => s.clearBuildings);
@@ -99,6 +101,13 @@ export function Toolbar() {
         title="Toggle available road frontages overlay (F)"
       >
         Frontages
+      </button>
+      <button
+        style={snapDraw ? activeBtn : baseBtn}
+        onClick={() => toggleSnapDraw()}
+        title="Snap drawing to 45° angles and 10m increments (S)"
+      >
+        Snap
       </button>
       <button
         style={baseBtn}

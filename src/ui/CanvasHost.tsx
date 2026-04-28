@@ -173,6 +173,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         const k = e.key.toLowerCase();
         if (k === 'g') useUiStore.getState().toggleGrid();
         else if (k === 'f') useUiStore.getState().toggleFrontages();
+        else if (k === 's') useUiStore.getState().toggleSnapDraw();
         else if (k === '`') useUiStore.getState().toggleFps();
         else if (k === 'r') useCameraStore.getState().reset();
         else if (k === '1') useWorldStore.getState().toggleTool('road');
