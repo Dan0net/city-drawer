@@ -2,25 +2,23 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { sideOffset } from '@game/roadGeometry';
-import { trySpawn } from '@game/spawn';
+import { trySpawn } from '@game/buildings/spawn';
 import { useUiStore } from '@game/store/uiStore';
-import { aabbContainsPoint } from '@lib/aabb';
-import { wrapPi } from '@lib/math';
-import { pointInPoly, polyOverlapsObb } from '@lib/poly';
-
-const SNAP_ANGLE_STEP = Math.PI / 4; // 45°
-// Soft angle snap: only engage when the cursor is within this many radians
-// of a 45° axis. Outside the band, the cursor angle passes through unchanged.
-const SNAP_ANGLE_TOLERANCE = (5 * Math.PI) / 180; // 5°
-const SNAP_LENGTH_STEP = 10; // m
+import {
+  applyDrawSnap,
+  computeSnap,
+  snapToAnchor,
+  type SnapResult,
+} from '@game/drawing/snap';
+import { findRoadCrossings } from '@game/roads/crossings';
+import {
+  buildingAtPoint,
+  buildingsWithPrimaryOn,
+  predictRoadBulldoze,
+  removeBuildingRestoring,
+} from '@game/buildings/bulldoze';
 
 export type Tool = 'none' | 'road' | 'small_road' | 'path' | 'bulldoze';
-
-type SnapResult =
-  | { kind: 'node'; nodeId: NodeId; x: number; y: number }
-  | { kind: 'edge'; edgeId: EdgeId; t: number; x: number; y: number }
-  | { kind: 'free'; x: number; y: number };
 
 type BulldozeHover =
   | { kind: 'edge'; id: EdgeId }
@@ -60,202 +58,6 @@ interface WorldState {
   simStep(dt: number): void;
   togglePause(): void;
 }
-
-const snapToAnchor = (s: SnapResult): Anchor => {
-  if (s.kind === 'node') return { kind: 'node', nodeId: s.nodeId };
-  if (s.kind === 'edge') return { kind: 'split', edgeId: s.edgeId, t: s.t };
-  return { kind: 'free', x: s.x, y: s.y };
-};
-
-const computeSnap = (graph: Graph, x: number, y: number, radius: number): SnapResult => {
-  const node = graph.nearestNode(x, y, radius);
-  if (node) return { kind: 'node', nodeId: node.id, x: node.x, y: node.y };
-  const edge = graph.nearestEdge(x, y, radius);
-  if (edge) return { kind: 'edge', edgeId: edge.edge.id, t: edge.t, x: edge.px, y: edge.py };
-  return { kind: 'free', x, y };
-};
-
-// Reference angles to snap drawing against. From a node, we use every
-// incident edge's direction; from an edge-split, the edge's tangent; from a
-// free start, just the global X axis. Each yields ±k·45° candidates downstream.
-const referenceAngles = (graph: Graph, start: SnapResult): number[] => {
-  if (start.kind === 'node') {
-    const node = graph.nodes.get(start.nodeId);
-    if (!node) return [0];
-    const out: number[] = [];
-    for (const eid of node.edges) {
-      const e = graph.edges.get(eid);
-      if (!e) continue;
-      const other = graph.nodes.get(e.from === node.id ? e.to : e.from);
-      if (!other) continue;
-      out.push(Math.atan2(other.y - node.y, other.x - node.x));
-    }
-    return out.length > 0 ? out : [0];
-  }
-  if (start.kind === 'edge') {
-    const e = graph.edges.get(start.edgeId);
-    if (!e) return [0];
-    const a = graph.nodes.get(e.from);
-    const b = graph.nodes.get(e.to);
-    if (!a || !b) return [0];
-    return [Math.atan2(b.y - a.y, b.x - a.x)];
-  }
-  return [0];
-};
-
-const applyDrawSnap = (graph: Graph, start: SnapResult, raw: SnapResult): SnapResult => {
-  const dx = raw.x - start.x;
-  const dy = raw.y - start.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 1e-6) return raw;
-
-  const refs = referenceAngles(graph, start);
-  const cur = Math.atan2(dy, dx);
-  let bestAngle = cur;
-  let bestDelta = Infinity;
-  for (const ref of refs) {
-    // Round (cur−ref) to the nearest k·45° — the ±k·45° fan is symmetric, so
-    // one rounded k captures the best candidate per reference.
-    const k = Math.round(wrapPi(cur - ref) / SNAP_ANGLE_STEP);
-    const candidate = ref + k * SNAP_ANGLE_STEP;
-    const delta = Math.abs(wrapPi(candidate - cur));
-    if (delta < bestDelta) {
-      bestDelta = delta;
-      bestAngle = candidate;
-    }
-  }
-  // Outside the tolerance band, leave the cursor angle alone.
-  if (bestDelta > SNAP_ANGLE_TOLERANCE) bestAngle = cur;
-
-  const snappedLen = Math.max(
-    SNAP_LENGTH_STEP,
-    Math.round(len / SNAP_LENGTH_STEP) * SNAP_LENGTH_STEP,
-  );
-  return {
-    kind: 'free',
-    x: start.x + Math.cos(bestAngle) * snappedLen,
-    y: start.y + Math.sin(bestAngle) * snappedLen,
-  };
-};
-
-const buildingAtPoint = (buildings: Building[], x: number, y: number): Building | null => {
-  for (let i = buildings.length - 1; i >= 0; i--) {
-    const b = buildings[i];
-    if (!aabbContainsPoint(b.aabb, x, y)) continue;
-    if (pointInPoly(b.poly, x, y)) return b;
-  }
-  return null;
-};
-
-const predictRoadBulldoze = (
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  kind: EdgeKind,
-  buildings: Building[],
-): BuildingId[] => {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 1e-6) return [];
-  const cx = (start.x + end.x) / 2;
-  const cy = (start.y + end.y) / 2;
-  const rot = Math.atan2(dy, dx);
-  const width = 2 * sideOffset(kind);
-  const out: BuildingId[] = [];
-  for (const b of buildings) {
-    if (polyOverlapsObb(b.poly, cx, cy, len, width, rot)) out.push(b.id);
-  }
-  return out;
-};
-
-interface DrawingCrossing {
-  x: number;
-  y: number;
-  t: number; // along the new line (drawingStart → end)
-  edgeId: EdgeId;
-  s: number; // along the existing edge
-}
-
-// Edges crossed by the straight segment start→end, sorted by distance from
-// start. Skips edges that share an endpoint with the start/end snap (those
-// aren't true crossings, just incidence) and the start/end split edges.
-const findRoadCrossings = (
-  graph: Graph,
-  start: SnapResult,
-  end: SnapResult,
-): DrawingCrossing[] => {
-  const ax = start.x;
-  const ay = start.y;
-  const ex = end.x - ax;
-  const ey = end.y - ay;
-  if (ex * ex + ey * ey < 1e-6) return [];
-
-  const startNode = start.kind === 'node' ? start.nodeId : null;
-  const endNode = end.kind === 'node' ? end.nodeId : null;
-  const startEdge = start.kind === 'edge' ? start.edgeId : null;
-  const endEdge = end.kind === 'edge' ? end.edgeId : null;
-  const EPS = 1e-4;
-
-  const out: DrawingCrossing[] = [];
-  for (const e of graph.edges.values()) {
-    if (e.id === startEdge || e.id === endEdge) continue;
-    if (startNode != null && (e.from === startNode || e.to === startNode)) continue;
-    if (endNode != null && (e.from === endNode || e.to === endNode)) continue;
-    const a = graph.nodes.get(e.from)!;
-    const b = graph.nodes.get(e.to)!;
-    const fx = b.x - a.x;
-    const fy = b.y - a.y;
-    const denom = ex * fy - ey * fx;
-    if (Math.abs(denom) < 1e-9) continue;
-    const inv = 1 / denom;
-    const t = ((a.x - ax) * fy - (a.y - ay) * fx) * inv;
-    const s = ((a.x - ax) * ey - (a.y - ay) * ex) * inv;
-    if (t < EPS || t > 1 - EPS) continue;
-    if (s < EPS || s > 1 - EPS) continue;
-    out.push({
-      x: ax + ex * t,
-      y: ay + ey * t,
-      t,
-      edgeId: e.id,
-      s,
-    });
-  }
-  out.sort((a, b) => a.t - b.t);
-  return out;
-};
-
-const buildingsWithPrimaryOn = (
-  edgeIds: Set<EdgeId>,
-  buildings: Building[],
-): BuildingId[] => {
-  const out: BuildingId[] = [];
-  for (const b of buildings) {
-    const primaryEdge = b.consumed[0]?.edgeId;
-    if (primaryEdge != null && edgeIds.has(primaryEdge)) out.push(b.id);
-  }
-  return out;
-};
-
-// Removes a single building, restoring its consumed frontages on every edge
-// other than `excludeEdgeIds` (which we're about to delete). Returns true if
-// any frontage was actually restored.
-const removeBuildingRestoring = (
-  graph: Graph,
-  buildings: Building[],
-  buildingId: BuildingId,
-  excludeEdgeIds: Set<EdgeId> | null,
-): boolean => {
-  const idx = buildings.findIndex((b) => b.id === buildingId);
-  if (idx < 0) return false;
-  const b = buildings[idx];
-  buildings.splice(idx, 1);
-  let restored = false;
-  for (const c of b.consumed) {
-    if (excludeEdgeIds && excludeEdgeIds.has(c.edgeId)) continue;
-    if (graph.restoreFrontage(c.edgeId, c.side, c.t0, c.t1)) restored = true;
-  }
-  return restored;
-};
 
 const SPAWN_INTERVAL_MIN = 0.4; // seconds
 const SPAWN_INTERVAL_MAX = 0.8;

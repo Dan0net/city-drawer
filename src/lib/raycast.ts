@@ -83,7 +83,7 @@ export function rayHitPolygon(
 }
 
 // Ray vs segment (x0,y0)→(x1,y1). Parallel rays return Infinity.
-export function rayHitSegment(
+function rayHitSegment(
   ox: number,
   oy: number,
   dx: number,

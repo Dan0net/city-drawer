@@ -5,10 +5,10 @@ Pixi + React + Vite city builder. Player draws roads; everything else (buildings
 ## Layout
 
 - `src/game/` — domain logic, framework-agnostic
-  - `graph.ts` — road graph (nodes, edges, frontages); the source of truth
-  - `buildings.ts` — building types, placement geometry helpers
-  - `spawn.ts` — picks a frontage and tries to place a building
-  - `roadGeometry.ts` — road widths, side offsets, corner mitering
+  - `graph/` — road graph (nodes, edges, frontages); source of truth
+  - `roads/` — road semantics on the graph: `geometry.ts` (widths, side offsets, mitering), `crossings.ts`
+  - `buildings/` — `index.ts` (types, palette, defs), `spawn.ts` (placement algorithm), `bulldoze.ts` (queries + removal)
+  - `drawing/` — `snap.ts` (pointer + angle/length snap)
   - `core/tickLoop.ts` — fixed-step sim loop
   - `store/` — zustand stores: `worldStore` (graph + sim), `cameraStore`, `uiStore`
 - `src/render/` — Pixi rendering, one layer per concern

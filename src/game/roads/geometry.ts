@@ -1,4 +1,4 @@
-import type { EdgeId, EdgeKind, Graph } from './graph';
+import type { EdgeId, EdgeKind, Graph } from '@game/graph';
 import type { Vec2 } from '@lib/math';
 
 export const ROAD_HALF_WIDTH: Record<EdgeKind, number> = {

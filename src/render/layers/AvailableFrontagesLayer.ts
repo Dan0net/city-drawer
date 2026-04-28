@@ -7,7 +7,7 @@ import {
   sideNormal,
   sideOffset,
   type Side,
-} from '@game/roadGeometry';
+} from '@game/roads/geometry';
 
 const COLOR = 0x4ade80;
 const WIDTH = 1.2;

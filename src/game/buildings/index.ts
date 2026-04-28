@@ -1,4 +1,4 @@
-import type { ConsumedFrontage } from './graph';
+import type { ConsumedFrontage } from '@game/graph';
 import type { AABB } from '@lib/aabb';
 import type { Vec2 } from '@lib/math';
 

@@ -1,7 +1,7 @@
-import type { ConsumedFrontage, Graph, GraphEdge } from './graph';
-import type { Building, BuildingType, FailedAttempt } from './buildings';
-import { BUILDING_TYPES, MIN_FRONTAGE_LENGTH } from './buildings';
-import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, sideOffset, type Side } from './roadGeometry';
+import type { ConsumedFrontage, Graph, GraphEdge } from '@game/graph';
+import type { Building, BuildingType, FailedAttempt } from './';
+import { BUILDING_TYPES, MIN_FRONTAGE_LENGTH } from './';
+import { ROAD_HALF_WIDTH, EDGE_CLEARANCE, sideOffset, type Side } from '@game/roads/geometry';
 import { aabbContainsPoint } from '@lib/aabb';
 import { pointInPoly, polyAabb, polyArea, polyCentroid } from '@lib/poly';
 import { rayHitOBB, rayHitPolygon } from '@lib/raycast';
