@@ -30,10 +30,8 @@ Phase PRDs in `docs/`.
 - **Pure geometry lives in `lib/`.** If a helper has no game concept in its signature, it doesn't belong in `game/`.
 - **No backwards-compat shims.** Delete unused code; don't leave it `export`-less "in case." `tsc` has `noUnusedLocals`/`noUnusedParameters` on — trust it.
 - **Comments: terse, only when WHY is non-obvious.** A hidden invariant, an FP-precision workaround, a non-obvious algorithm choice. Never describe what the code does. One line is the default; multi-line is rare. No section banners (`// ---- foo ----`).
-- **No dead exports.** Run `npx knip` if you suspect drift.
+- **Don't run dev server** Run `npx tsc` to typecheck, but not the dev server.
 
 ## Workflow
 
 - Typecheck: `npx tsc --noEmit`
-- Find dead code: `npx knip`
-- Dev server: `npm run dev`

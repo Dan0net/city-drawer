@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "fastnoise-lite": "^1.1.1",
     "pixi.js": "^8.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

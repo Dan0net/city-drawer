@@ -16,6 +16,7 @@ export function Hud({ fps }: { fps: number }) {
   const zoom = useCameraStore((s) => s.zoom);
   const tool = useWorldStore((s) => s.tool);
   const drawing = useWorldStore((s) => s.drawingStart != null);
+  const activeDemandMap = useUiStore((s) => s.activeDemandMap);
 
   return (
     <div
@@ -45,6 +46,7 @@ export function Hud({ fps }: { fps: number }) {
         tool {TOOL_LABEL[tool] ?? tool}
         {drawing ? ' · drawing' : ''}
       </div>
+      <div>map {activeDemandMap ?? 'off'}</div>
       <div>
         x {cx.toFixed(1)} m
         <br />

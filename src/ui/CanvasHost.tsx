@@ -6,6 +6,8 @@ import { EdgesLayer } from '@render/layers/EdgesLayer';
 import { GhostLayer } from '@render/layers/GhostLayer';
 import { BuildingsLayer } from '@render/layers/BuildingsLayer';
 import { AvailableFrontagesLayer } from '@render/layers/AvailableFrontagesLayer';
+import { CellMapLayer } from '@render/layers/CellMapLayer';
+import { DemandRoadOverlayLayer } from '@render/layers/DemandRoadOverlayLayer';
 import { createTickLoop } from '@game/core/tickLoop';
 import { useCameraStore } from '@game/store/cameraStore';
 import { useUiStore } from '@game/store/uiStore';
@@ -39,13 +41,17 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
 
       const viewport = new Viewport(canvas, handle.world);
       const grid = new DebugGridLayer(viewport);
+      const cellMap = new CellMapLayer();
       const buildings = new BuildingsLayer();
       const edges = new EdgesLayer();
+      const demandRoadOverlay = new DemandRoadOverlayLayer();
       const frontages = new AvailableFrontagesLayer();
       const ghost = new GhostLayer();
       handle.world.addChild(grid.container);
+      handle.world.addChild(cellMap.container);
       handle.world.addChild(buildings.container);
       handle.world.addChild(edges.container);
+      handle.world.addChild(demandRoadOverlay.container);
       handle.world.addChild(frontages.container);
       handle.world.addChild(ghost.container);
 
@@ -202,6 +208,10 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         else if (k === '0') useWorldStore.getState().setTool('none');
         else if (k === 'b') useWorldStore.getState().toggleTool('bulldoze');
         else if (k === 'p') useWorldStore.getState().togglePause();
+        else if (k === 'm') {
+          const ids = useWorldStore.getState().demandMaps.map((m) => m.id);
+          useUiStore.getState().cycleDemandMap(ids);
+        }
         else if (k === 'escape') useWorldStore.getState().cancelDraw();
       };
       const onKeyUp = (e: KeyboardEvent) => {
@@ -244,8 +254,10 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       let lastFpsEmit = performance.now();
       const tick = () => {
         grid.update();
+        cellMap.update();
         buildings.update();
         edges.update();
+        demandRoadOverlay.update();
         frontages.update();
         ghost.update();
 

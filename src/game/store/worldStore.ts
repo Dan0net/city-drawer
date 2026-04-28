@@ -17,6 +17,7 @@ import {
   predictRoadBulldoze,
   removeBuildingRestoring,
 } from '@game/buildings/bulldoze';
+import { createDemandMaps, type DemandMap } from '@game/demand/maps';
 
 export type Tool = 'none' | 'road' | 'small_road' | 'path' | 'bulldoze';
 
@@ -45,6 +46,10 @@ interface WorldState {
   drawingCrossings: { x: number; y: number }[];
   simTime: number;
   paused: boolean;
+  demandMaps: DemandMap[];
+  // Bumped when any demand map's data changes (cell write, road-field rebuild).
+  // Renderer subscribes to this rather than to graphVersion directly.
+  demandMapsVersion: number;
 
   setTool(t: Tool): void;
   toggleTool(t: Exclude<Tool, 'none'>): void;
@@ -73,6 +78,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
   let nextBuildingId = 1;
   let nextFailedId = 1;
   let nextSpawnAt = SPAWN_INTERVAL_MIN + Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
+  const demandMaps = createDemandMaps(1337);
 
   return {
     graph,
@@ -90,6 +96,8 @@ export const useWorldStore = create<WorldState>((set, get) => {
     drawingCrossings: [],
     simTime: 0,
     paused: false,
+    demandMaps,
+    demandMapsVersion: 0,
 
     setTool: (t) =>
       set({
@@ -398,3 +406,18 @@ export const useWorldStore = create<WorldState>((set, get) => {
     togglePause: () => set((s) => ({ paused: !s.paused })),
   };
 });
+
+// Demand-map road fields are derived from graph + cell data. Recompute every
+// time the graph mutates; bump demandMapsVersion so renderers refresh.
+{
+  let lastSeenGraphVersion = -1;
+  const recompute = (s: WorldState): void => {
+    if (s.graphVersion === lastSeenGraphVersion) return;
+    lastSeenGraphVersion = s.graphVersion;
+    for (const m of s.demandMaps) m.recompute(s.graph);
+    useWorldStore.setState((curr) => ({ demandMapsVersion: curr.demandMapsVersion + 1 }));
+  };
+  // Initial pass for the just-seeded maps (no nodes yet, but keeps versioning consistent).
+  recompute(useWorldStore.getState());
+  useWorldStore.subscribe(recompute);
+}

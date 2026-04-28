@@ -77,6 +77,9 @@ export function Toolbar() {
   const toggleFrontages = useUiStore((s) => s.toggleFrontages);
   const snapDraw = useUiStore((s) => s.snapDraw);
   const toggleSnapDraw = useUiStore((s) => s.toggleSnapDraw);
+  const activeDemandMap = useUiStore((s) => s.activeDemandMap);
+  const setDemandMap = useUiStore((s) => s.setDemandMap);
+  const demandMaps = useWorldStore((s) => s.demandMaps);
   const reset = useCameraStore((s) => s.reset);
   const clearAll = useWorldStore((s) => s.clearAll);
   const clearBuildings = useWorldStore((s) => s.clearBuildings);
@@ -132,6 +135,41 @@ export function Toolbar() {
         onClick={() => toggleSnapDraw()}
         title="Snap drawing to 45° angles and 10m increments (S)"
       />
+      <label
+        title="Demand overlay (M cycles)"
+        style={{
+          ...(activeDemandMap ? activeBtn : baseBtn),
+          padding: 0,
+          display: 'inline-flex',
+          alignItems: 'stretch',
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ padding: '6px 6px 6px 10px' }}>
+          Map <span style={{ opacity: 0.6 }}>M</span>
+        </span>
+        <select
+          value={activeDemandMap ?? ''}
+          onChange={(e) => setDemandMap(e.target.value === '' ? null : e.target.value)}
+          style={{
+            background: 'transparent',
+            color: 'inherit',
+            border: 'none',
+            padding: '6px 8px 6px 4px',
+            font: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+            outline: 'none',
+          }}
+        >
+          <option value="">off</option>
+          {demandMaps.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <ActionButton
         label="Clear bldgs"
         onClick={() => clearBuildings()}
