@@ -56,10 +56,10 @@ export class GhostLayer {
       } else if (snap.kind === 'edge') {
         g.circle(snap.x, snap.y, dotR).fill({ color: SNAP_EDGE_COLOR, alpha: 0.95 });
       } else {
-        const r = 3 / zoom;
-        g.moveTo(snap.x - r, snap.y).lineTo(snap.x + r, snap.y);
-        g.moveTo(snap.x, snap.y - r).lineTo(snap.x, snap.y + r);
-        g.stroke({ width: 1 / zoom, color: 0xffffff, alpha: 0.5 });
+        // 'free' — preview the road as a 0-length stroke (filled circle of
+        // road width) plus the node dot the click would create.
+        g.circle(snap.x, snap.y, width / 2).fill({ color: GHOST_COLOR, alpha: 0.55 });
+        g.circle(snap.x, snap.y, dotR).fill({ color: SNAP_NODE_COLOR, alpha: 0.85 });
       }
     }
 
