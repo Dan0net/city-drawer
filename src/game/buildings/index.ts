@@ -19,7 +19,17 @@ export interface Building {
   // Frontage ranges this building occupies (front + any back/side faces along
   // other roads). Restored on removal.
   consumed: ConsumedFrontage[];
+  // Factory-only: constant jobsTotal slots, jobsFilled increments when a
+  // house attributes to this factory. The jobs road-field broadcasts the
+  // remaining (jobsTotal - jobsFilled) along the graph with decay.
+  jobsTotal?: number;
+  jobsFilled?: number;
+  // House-only: id of the factory whose `jobsFilled` this house counts
+  // toward. Decremented on bulldoze.
+  attributedFactoryId?: BuildingId;
 }
+
+export const JOBS_PER_FACTORY = 8;
 
 // Rejected spawn attempt. Rendered as a red ghost then pruned. Diagnostic.
 export interface FailedAttempt {

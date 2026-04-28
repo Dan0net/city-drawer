@@ -1,5 +1,6 @@
 import type { Graph } from '@game/graph';
 import type { Building } from '@game/buildings';
+import { JOBS_PER_FACTORY } from '@game/buildings';
 import { createCellMap, type CellMap } from './cellMap';
 import { createRoadField, type RoadField } from './roadField';
 import { bfsDecay, sampleCellsToRoadField, splatRoadFieldToCells } from './compute';
@@ -65,18 +66,17 @@ function createResourceMap(seed: number): DemandMap {
   };
 }
 
-// Jobs are supplied by factories and consumed by houses. The map shows net
-// supply along the graph: each factory floods JOB_SUPPLY value into its
-// nearest node and decays away each hop; each house subtracts JOB_DEMAND
-// from its nearest node.
-const JOB_SUPPLY = 100;
-const JOB_DEMAND = 30;
+// Jobs road-field broadcasts each factory's remaining (unfilled) job count
+// along the graph, decaying per hop. Houses fill jobs by incrementing their
+// attributed factory's `jobsFilled` (worldStore), so consumption is real
+// state, not a subtraction at recompute time. When a factory is full, its
+// contribution is 0 and the field cools naturally.
 const JOB_DECAY = 0.7;
 
 const jobsPalette: Palette = (v, out, o) => {
-  // Cool teal — distinct from resource ochre. v is jobs road-field magnitude;
-  // saturate at JOB_SUPPLY so a single factory's epicentre reads as full.
-  const k = Math.max(0, Math.min(1, v / JOB_SUPPLY));
+  // Cool teal — distinct from resource ochre. Saturate at one full factory's
+  // worth of jobs so a brand-new fully-staffed factory reads as full colour.
+  const k = Math.max(0, Math.min(1, v / JOBS_PER_FACTORY));
   out[o] = Math.round(40 + 60 * k);
   out[o + 1] = Math.round(110 + 110 * k);
   out[o + 2] = Math.round(140 + 80 * k);
@@ -86,10 +86,7 @@ const jobsPalette: Palette = (v, out, o) => {
 function createJobsMap(): DemandMap {
   const cellMap = createCellMap(GRID_RES, GRID_RES, CELL_SIZE, WORLD_MIN, WORLD_MIN);
   const roadField = createRoadField();
-  // Reach defines which node a building "belongs to" — a few cells past the
-  // road sample radius is enough to catch a building set back from the road.
   const NEAREST_RADIUS = CELL_SIZE * 6;
-  // How far each hot node bleeds into the cell heatmap.
   const SPLAT_RADIUS = CELL_SIZE * 3;
   return {
     id: 'jobs',
@@ -102,19 +99,11 @@ function createJobsMap(): DemandMap {
       roadField.clear();
       for (const b of ctx.buildings) {
         if (b.type !== 'factory') continue;
+        const remaining = (b.jobsTotal ?? 0) - (b.jobsFilled ?? 0);
+        if (remaining <= 0) continue;
         const node = ctx.graph.nearestNode(b.centroid.x, b.centroid.y, NEAREST_RADIUS);
         if (!node) continue;
-        bfsDecay(ctx.graph, node.id, JOB_SUPPLY, JOB_DECAY, roadField);
-      }
-      for (const b of ctx.buildings) {
-        if (b.type !== 'small_house') continue;
-        const node = ctx.graph.nearestNode(b.centroid.x, b.centroid.y, NEAREST_RADIUS);
-        if (!node) continue;
-        roadField.set(node.id, (roadField.get(node.id) ?? 0) - JOB_DEMAND);
-      }
-      // Drop non-positive entries so consumers don't have to clamp.
-      for (const [n, v] of roadField) {
-        if (v <= 1e-3) roadField.delete(n);
+        bfsDecay(ctx.graph, node.id, remaining, JOB_DECAY, roadField);
       }
       splatRoadFieldToCells(roadField, ctx.graph, cellMap, SPLAT_RADIUS);
     },

@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { Graph } from '@game/graph';
 import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
-import { trySpawn, trySpawnFactoryOnEdge } from '@game/buildings/spawn';
+import { JOBS_PER_FACTORY } from '@game/buildings';
+import { pickFrontageOnEdge, placeBuildingOnFrontage } from '@game/buildings/spawn';
 import { clearCellsUnderPoly } from '@game/demand/cellMap';
 import { useUiStore } from '@game/store/uiStore';
 import {
@@ -365,20 +366,14 @@ export const useWorldStore = create<WorldState>((set, get) => {
         if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
         set(patch);
       } else {
-        const idx = bs.findIndex((b) => b.id === bulldozeHover.id);
-        if (idx >= 0) {
-          const removed = bs[idx];
-          bs.splice(idx, 1);
-          let bumpGraph = false;
-          for (const c of removed.consumed) {
-            if (g.restoreFrontage(c.edgeId, c.side, c.t0, c.t1)) bumpGraph = true;
-          }
-          set({
-            buildingsVersion: get().buildingsVersion + 1,
-            bulldozeHover: null,
-            ...(bumpGraph ? { graphVersion: g.version } : {}),
-          });
-        }
+        // Same path as road-bulldoze removals: restores frontage + decrements
+        // attributed factory's jobsFilled if this was a house.
+        const bumpGraph = removeBuildingRestoring(g, bs, bulldozeHover.id, null);
+        set({
+          buildingsVersion: get().buildingsVersion + 1,
+          bulldozeHover: null,
+          ...(bumpGraph ? { graphVersion: g.version } : {}),
+        });
       }
     },
 
@@ -425,23 +420,53 @@ export const useWorldStore = create<WorldState>((set, get) => {
       let bumpGraph = false;
 
       if (newSimTime >= nextSpawnAt) {
-        const jobsField = s.demandMaps.find((m) => m.id === 'jobs')?.roadField;
-        const result = trySpawn(
-          { graph: s.graph, buildings: s.buildings, jobsField },
-          newSimTime,
-          Math.random,
-        );
-        if (result?.kind === 'success') {
-          s.buildings.push({ ...result.building, id: nextBuildingId++ });
-          for (const c of result.building.consumed) {
-            if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
-              bumpGraph = true;
+        const pick = pickHighestDemand(s, Math.random);
+        if (pick) {
+          const front = pickFrontageOnEdge(s.graph, pick.edgeId, Math.random);
+          if (front) {
+            const result = placeBuildingOnFrontage(
+              { graph: s.graph, buildings: s.buildings },
+              front,
+              pick.kind,
+              newSimTime,
+              Math.random,
+            );
+            if (result.kind === 'success') {
+              const newBuilding: Building = { ...result.building, id: nextBuildingId++ };
+              if (pick.kind === 'factory') {
+                newBuilding.jobsTotal = JOBS_PER_FACTORY;
+                newBuilding.jobsFilled = 0;
+                const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
+                if (resourceMap) {
+                  clearCellsUnderPoly(
+                    resourceMap.cellMap,
+                    newBuilding.poly,
+                    newBuilding.aabb,
+                  );
+                }
+              } else if (pick.kind === 'small_house') {
+                const f = nearestFactoryWithCapacity(
+                  s.graph,
+                  s.buildings,
+                  newBuilding.centroid,
+                );
+                if (f) {
+                  newBuilding.attributedFactoryId = f.id;
+                  f.jobsFilled = (f.jobsFilled ?? 0) + 1;
+                }
+              }
+              s.buildings.push(newBuilding);
+              for (const c of newBuilding.consumed) {
+                if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
+                  bumpGraph = true;
+                }
+              }
+              bumpBuildings = true;
+            } else if (result.kind === 'failure') {
+              s.failedAttempts.push({ ...result.failure, id: nextFailedId++ });
+              bumpFailed = true;
             }
           }
-          bumpBuildings = true;
-        } else if (result?.kind === 'failure') {
-          s.failedAttempts.push({ ...result.failure, id: nextFailedId++ });
-          bumpFailed = true;
         }
         nextSpawnAt =
           newSimTime +
@@ -473,11 +498,8 @@ export const useWorldStore = create<WorldState>((set, get) => {
 });
 
 // Demand-map road fields are derived from graph + buildings + cell data.
-// Recompute whenever either the graph or the building list changes, then
-// attempt deterministic factory spawning where the resource map is hot.
-// Triggered factory spawns mutate state, which re-enters this subscriber
-// and converges once no edge passes the threshold or fits a factory.
-const RESOURCE_FACTORY_THRESHOLD = 0.2;
+// Recompute whenever either the graph or the building list changes; the
+// next sim tick then picks the highest-demand thing to spawn.
 {
   let lastGraphVersion = -1;
   let lastBuildingsVersion = -1;
@@ -491,48 +513,109 @@ const RESOURCE_FACTORY_THRESHOLD = 0.2;
     lastGraphVersion = s.graphVersion;
     lastBuildingsVersion = s.buildingsVersion;
     for (const m of s.demandMaps) m.recompute({ graph: s.graph, buildings: s.buildings });
-    autoSpawnFactory();
     useWorldStore.setState((curr) => ({ demandMapsVersion: curr.demandMapsVersion + 1 }));
   };
-
-  // Picks the hottest edge by avg of endpoint resource road-field values,
-  // and tries to place one factory on it. Returns true if a factory landed.
-  const autoSpawnFactory = (): boolean => {
-    const s = useWorldStore.getState();
-    const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
-    if (!resourceMap) return false;
-    let bestEdgeId: number | null = null;
-    let bestVal = RESOURCE_FACTORY_THRESHOLD;
-    for (const e of s.graph.edges.values()) {
-      const va = resourceMap.roadField.get(e.from) ?? 0;
-      const vb = resourceMap.roadField.get(e.to) ?? 0;
-      const v = (va + vb) * 0.5;
-      if (v > bestVal) {
-        bestVal = v;
-        bestEdgeId = e.id;
-      }
-    }
-    if (bestEdgeId == null) return false;
-    const result = trySpawnFactoryOnEdge(
-      { graph: s.graph, buildings: s.buildings },
-      bestEdgeId,
-      s.simTime,
-      Math.random,
-    );
-    if (result?.kind !== 'success') return false;
-    s.buildings.push({ ...result.building, id: nextBuildingId++ });
-    for (const c of result.building.consumed) {
-      s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1);
-    }
-    clearCellsUnderPoly(resourceMap.cellMap, result.building.poly, result.building.aabb);
-    useWorldStore.setState({
-      buildingsVersion: s.buildingsVersion + 1,
-      graphVersion: s.graph.version,
-    });
-    return true;
-  };
-
-  // Initial pass for the just-seeded maps (no nodes yet, but keeps versioning consistent).
   recompute(useWorldStore.getState());
   useWorldStore.subscribe(recompute);
+}
+
+// ---------- demand-driven spawn picker ----------
+
+// Houses fill jobs while any edge has positive jobs road-field. Once the
+// world's jobs are fully filled (every factory at capacity), the picker
+// falls through to factories on hot resource edges. Resource is gated by
+// a small threshold so very faint road-field tails don't trigger spawns.
+//
+// Within each tier the pick is weighted-random by score, not argmax — so
+// hot edges are preferred but lukewarm ones still get occasional houses,
+// and a failed placement on the hottest edge doesn't lock the loop.
+const RESOURCE_FACTORY_THRESHOLD = 0.2;
+type DemandPick = { kind: 'small_house' | 'factory'; edgeId: EdgeId; score: number };
+
+function pickHighestDemand(s: WorldState, rand: () => number): DemandPick | null {
+  const jobsMap = s.demandMaps.find((m) => m.id === 'jobs');
+  if (jobsMap) {
+    const housePick = weightedDemandPick(s, jobsMap.roadField, 'small_house', 0, rand);
+    if (housePick) return housePick;
+  }
+  const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
+  if (resourceMap) {
+    const factoryPick = weightedDemandPick(
+      s,
+      resourceMap.roadField,
+      'factory',
+      RESOURCE_FACTORY_THRESHOLD,
+      rand,
+    );
+    if (factoryPick) return factoryPick;
+  }
+  return null;
+}
+
+function weightedDemandPick(
+  s: WorldState,
+  field: ReadonlyMap<NodeId, number>,
+  kind: DemandPick['kind'],
+  threshold: number,
+  rand: () => number,
+): DemandPick | null {
+  const candidates: DemandPick[] = [];
+  let total = 0;
+  for (const e of s.graph.edges.values()) {
+    const va = field.get(e.from) ?? 0;
+    const vb = field.get(e.to) ?? 0;
+    const v = (va + vb) * 0.5;
+    if (v > threshold) {
+      candidates.push({ kind, edgeId: e.id, score: v });
+      total += v;
+    }
+  }
+  if (total <= 0) return null;
+  let r = rand() * total;
+  for (const c of candidates) {
+    r -= c.score;
+    if (r <= 0) return c;
+  }
+  return candidates[candidates.length - 1];
+}
+
+// Closest factory (graph-distance) with a free job slot, starting from the
+// node nearest the house's centroid. Returns null if no factory has slack
+// in the connected component.
+const FACTORY_NEAREST_RADIUS = 96;
+
+function nearestFactoryWithCapacity(
+  graph: Graph,
+  buildings: Building[],
+  center: { x: number; y: number },
+): Building | null {
+  const start = graph.nearestNode(center.x, center.y, FACTORY_NEAREST_RADIUS);
+  if (!start) return null;
+  const factoryByNode = new Map<NodeId, Building>();
+  for (const b of buildings) {
+    if (b.type !== 'factory') continue;
+    if ((b.jobsFilled ?? 0) >= (b.jobsTotal ?? 0)) continue;
+    const fn = graph.nearestNode(b.centroid.x, b.centroid.y, FACTORY_NEAREST_RADIUS);
+    if (fn) factoryByNode.set(fn.id, b);
+  }
+  if (factoryByNode.size === 0) return null;
+  const visited = new Set<NodeId>([start.id]);
+  const queue: NodeId[] = [start.id];
+  while (queue.length > 0) {
+    const n = queue.shift()!;
+    const f = factoryByNode.get(n);
+    if (f) return f;
+    const node = graph.nodes.get(n);
+    if (!node) continue;
+    for (const eid of node.edges) {
+      const e = graph.edges.get(eid);
+      if (!e) continue;
+      const other = e.from === n ? e.to : e.from;
+      if (!visited.has(other)) {
+        visited.add(other);
+        queue.push(other);
+      }
+    }
+  }
+  return null;
 }
