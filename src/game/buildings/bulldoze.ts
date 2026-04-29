@@ -3,6 +3,7 @@ import type { Building, BuildingId } from './';
 import { sideOffset } from '@game/roads/geometry';
 import { aabbContainsPoint } from '@lib/aabb';
 import { pointInPoly, polyOverlapsObb } from '@lib/poly';
+import { undoAttribution } from '@game/sim/attribution';
 
 export const buildingAtPoint = (buildings: Building[], x: number, y: number): Building | null => {
   // Iterate newest-first so the topmost overlap wins.
@@ -49,10 +50,9 @@ export const buildingsWithPrimaryOn = (
 };
 
 // Removes a single building, restoring its consumed frontages on every edge
-// other than `excludeEdgeIds` (which we're about to delete). If the removed
-// building was attributed to another (house→factory, shop→house, park→house),
-// decrements the appropriate counter on the attributed-to building. Returns
-// true if any frontage was actually restored.
+// other than `excludeEdgeIds` (which we're about to delete). Undoes any
+// source-slot fills the building made when it was placed. Returns true if any
+// frontage was actually restored.
 export const removeBuildingRestoring = (
   graph: Graph,
   buildings: Building[],
@@ -63,19 +63,7 @@ export const removeBuildingRestoring = (
   if (idx < 0) return false;
   const b = buildings[idx];
   buildings.splice(idx, 1);
-  if (b.attributedToIds) {
-    for (const id of b.attributedToIds) {
-      const target = buildings.find((x) => x.id === id);
-      if (!target) continue;
-      if (b.type === 'small_house' && target.jobsFilled != null && target.jobsFilled > 0) {
-        target.jobsFilled--;
-      } else if (b.type === 'shop' && target.commercialFilled != null && target.commercialFilled > 0) {
-        target.commercialFilled--;
-      } else if (b.type === 'park' && target.leisureFilled != null && target.leisureFilled > 0) {
-        target.leisureFilled--;
-      }
-    }
-  }
+  undoAttribution(b, buildings);
   let restored = false;
   for (const c of b.consumed) {
     if (excludeEdgeIds && excludeEdgeIds.has(c.edgeId)) continue;

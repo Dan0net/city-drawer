@@ -7,8 +7,10 @@ Pixi + React + Vite city builder. Player draws roads; everything else (buildings
 - `src/game/` — domain logic, framework-agnostic
   - `graph/` — road graph (nodes, edges, frontages); source of truth
   - `roads/` — road semantics on the graph: `geometry.ts` (widths, side offsets, mitering), `crossings.ts`
-  - `buildings/` — `index.ts` (types, palette, defs), `spawn.ts` (placement algorithm), `bulldoze.ts` (queries + removal)
-  - `drawing/` — `snap.ts` (pointer + angle/length snap)
+  - `buildings/` — `index.ts` (physical types + colors), `spawn.ts` (placement algorithm), `bulldoze.ts` (queries + removal)
+  - `demand/` — `types.ts` (DEMAND_TYPES table), `maps.ts` (generic map factory), `cellMap.ts`, `compute.ts`, `seed.ts`, `roadField.ts`
+  - `drawing/` — `snap.ts`, `pointer.ts` (pure pointer/snap/hover state), `commit.ts` (graph mutation on draw commit), `subdivide.ts`
+  - `sim/` — `config.ts` (cross-cutting tunables), `animation.ts` (sim→render timing contract), `picker.ts`, `attribution.ts`, `spawn.ts` (spawn engine)
   - `core/tickLoop.ts` — fixed-step sim loop
   - `store/` — zustand stores: `worldStore` (graph + sim), `cameraStore`, `uiStore`
 - `src/render/` — Pixi rendering, one layer per concern
@@ -31,6 +33,18 @@ Phase PRDs in `docs/`.
 - **No backwards-compat shims.** Delete unused code; don't leave it `export`-less "in case." `tsc` has `noUnusedLocals`/`noUnusedParameters` on — trust it.
 - **Comments: terse, only when WHY is non-obvious.** A hidden invariant, an FP-precision workaround, a non-obvious algorithm choice. Never describe what the code does. One line is the default; multi-line is rare. No section banners (`// ---- foo ----`).
 - **Don't run dev server** Run `npx tsc` to typecheck, but not the dev server.
+
+## Demand model
+
+Every demand follows source/sink/decay. A SOURCE (cells, or a building type with `capacity`) broadcasts `(capacity − filled[id])` along the road graph with per-demand decay. A SINK (building type) spawns where the field is hot and fills `count` source slots near it; bulldozing the sink restores them. New demand or building type → add a row to `DEMAND_TYPES` / `BUILDING_TYPES`. No branches on building type in sim, store, or bulldoze.
+
+A building type sinks at most one demand; it can source any number. `Building.filled` is `Record<DemandId, number>`, keyed by demand id, owned by the demand layer.
+
+## Layering
+
+- `game/store/` is orchestration: state + thin actions that compose pure `game/sim/`, `game/demand/`, `game/drawing/` functions. No setState in those modules.
+- `game/store/` does not import other stores or `@render/`. Render-mirrored timings live in `game/sim/animation.ts`; both sides import from there.
+- Per-type tunables (size, capacity, served-count, frontage) live in the type's table row. Cross-type sim tunables live in `game/sim/config.ts`. Don't introduce a top-level constant for something that belongs to one type.
 
 ## Workflow
 

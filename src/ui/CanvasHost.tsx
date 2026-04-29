@@ -144,7 +144,9 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
 
         const w = viewport.screenToWorld(sx, sy);
         const zoom = useCameraStore.getState().zoom;
-        useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom);
+        useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom, {
+          snapDraw: useUiStore.getState().snapDraw,
+        });
       };
 
       const onPointerUp = (e: PointerEvent) => {
@@ -167,7 +169,9 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         const sy = e.clientY - rect.top;
         const w = viewport.screenToWorld(sx, sy);
         const zoom = useCameraStore.getState().zoom;
-        useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom);
+        useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom, {
+          snapDraw: useUiStore.getState().snapDraw,
+        });
 
         const tool = useWorldStore.getState().tool;
         if (tool === 'road' || tool === 'small_road' || tool === 'path') {

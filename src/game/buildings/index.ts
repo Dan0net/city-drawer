@@ -9,8 +9,7 @@ export type BuildingType = 'small_house' | 'shop' | 'warehouse' | 'park' | 'fact
 export interface Building {
   id: BuildingId;
   type: BuildingType;
-  // Closed polygon in WORLD coords as flat [x0,y0,x1,y1,...].
-  // CCW-ish; renderer treats it as a closed loop.
+  // Closed polygon in WORLD coords as flat [x0,y0,x1,y1,...]. CCW-ish.
   poly: number[];
   centroid: Vec2;
   aabb: AABB;
@@ -19,28 +18,14 @@ export interface Building {
   // Frontage ranges this building occupies (front + any back/side faces along
   // other roads). Restored on removal.
   consumed: ConsumedFrontage[];
-  // Factory-only: constant jobsTotal slots, jobsFilled increments when a
-  // house attributes to this factory. The jobs road-field broadcasts the
-  // remaining (jobsTotal - jobsFilled) along the graph with decay.
-  jobsTotal?: number;
-  jobsFilled?: number;
-  // House-only: how many shops / parks this house has been attributed to.
-  // Each demand map broadcasts `(TOTAL - filled)` per house.
-  commercialFilled?: number;
-  leisureFilled?: number;
-  // Consumer-side attribution: ids of the buildings this one counts toward.
-  // Houses attribute to a single factory (one element); a shop attributes
-  // to SHOP_HOUSES_SERVED nearby houses; a park attributes to
-  // PARK_HOUSES_SERVED. Decrement-on-bulldoze loops over all entries and
-  // branches on the removed building's type to pick the right counter.
+  // Slots this building has filled AS A SOURCE for each demand. Read by the
+  // demand's BFS broadcast as (def.source.capacity − filled[def.id]). The
+  // demand layer manages writes; the building stays a passive record.
+  filled?: Record<string, number>;
+  // Sources this building filled AS A SINK at spawn. Bulldoze undoes them.
+  // The demand is recovered via DEMAND_TYPES.find(d => d.sink.type === type).
   attributedToIds?: BuildingId[];
 }
-
-export const JOBS_PER_FACTORY = 8;
-export const HOUSE_COMMERCIAL_TOTAL = 1;
-export const HOUSE_LEISURE_TOTAL = 1;
-export const SHOP_HOUSES_SERVED = 10;
-export const PARK_HOUSES_SERVED = 20;
 
 // Rejected spawn attempt. Rendered as a red ghost then pruned. Diagnostic.
 export interface FailedAttempt {
@@ -54,67 +39,33 @@ export interface FailedAttempt {
 
 interface BuildingTypeDef {
   type: BuildingType;
-  weight: number;
   color: number;
   // Preferred area. Spawner picks the largest size first; on rejection, retries
   // with a smaller targetArea (see SHRINK_FACTORS in spawn.ts).
   targetArea: number;
   // Optional [min, max] range; when present, the spawner samples a target
   // area in this range per spawn instead of using the fixed targetArea.
-  // Used by parks, which have wildly variable sizes.
   targetAreaRange?: [number, number];
   // Acceptable frontage range (meters) along the road tangent.
   frontRange: [number, number];
 }
 
 export const BUILDING_TYPES: ReadonlyArray<BuildingTypeDef> = [
-  {
-    type: 'small_house',
-    weight: 0.55,
-    color: 0xc8956a,
-    targetArea: 280,
-    frontRange: [14, 22],
-  },
-  // Non-residential, non-industrial types are disabled until later steps in
-  // the demand loop wire them up (commercial driven by residents, etc.).
-  // Weight 0 means the random picker skips them entirely.
-  {
-    type: 'shop',
-    weight: 0,
-    color: 0x6c97c4,
-    targetArea: 800,
-    frontRange: [24, 36],
-  },
-  {
-    type: 'warehouse',
-    weight: 0,
-    color: 0x848c95,
-    targetArea: 1800,
-    frontRange: [36, 54],
-  },
+  { type: 'small_house', color: 0xc8956a, targetArea: 280, frontRange: [14, 22] },
+  { type: 'shop', color: 0x6c97c4, targetArea: 800, frontRange: [24, 36] },
+  { type: 'warehouse', color: 0x848c95, targetArea: 1800, frontRange: [36, 54] },
   {
     type: 'park',
-    weight: 0,
     color: 0x6ba070,
     targetArea: 600,
     targetAreaRange: [80, 2400],
     frontRange: [4, 60],
   },
-  // Factories never spawn from the random weighted picker. They are placed
-  // deterministically by the demand system when a road sits on a hot
-  // resource cell.
-  {
-    type: 'factory',
-    weight: 0,
-    color: 0x8b3e2f,
-    targetArea: 2500,
-    frontRange: [40, 70],
-  },
+  { type: 'factory', color: 0x8b3e2f, targetArea: 2500, frontRange: [40, 70] },
 ];
 
 // Smallest frontage any building type will accept. Frontage intervals shorter
-// than this can never host a building, so they're filtered out of pickFrontage
-// and the green debug overlay.
+// than this can never host a building.
 export const MIN_FRONTAGE_LENGTH = Math.min(
   ...BUILDING_TYPES.map((t) => t.frontRange[0]),
 );
@@ -124,4 +75,3 @@ export const BUILDING_COLORS: Record<BuildingType, number> = (() => {
   for (const t of BUILDING_TYPES) m[t.type] = t.color;
   return m as Record<BuildingType, number>;
 })();
-

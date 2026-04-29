@@ -8,14 +8,12 @@ import type {
 } from '@game/buildings';
 import { BUILDING_COLORS } from '@game/buildings';
 import { useWorldStore } from '@game/store/worldStore';
+import { PERIMETER_EDGE_DURATION_S, FILL_DURATION_S } from '@game/sim/animation';
 
 const STROKE_WIDTH = 1.2;
 const DOT_RADIUS = 0.9;
 const BULLDOZE = 0xe55050;
 const FAIL_COLOR = 0xe55050;
-
-const EDGE_DURATION = 0.2;
-const FILL_DURATION = 0.4;
 
 interface Node {
   cont: Container;
@@ -148,7 +146,7 @@ export class BuildingsLayer {
       localPoly,
       strokeColor,
       numEdges,
-      perimeterDuration: numEdges * EDGE_DURATION,
+      perimeterDuration: numEdges * PERIMETER_EDGE_DURATION_S,
       done: false,
     };
   }
@@ -158,7 +156,7 @@ export class BuildingsLayer {
       const node = this.buildingNodes.get(b.id);
       if (!node || node.done) continue;
       const ageSec = simTime - b.spawnedAt;
-      const total = node.perimeterDuration + FILL_DURATION;
+      const total = node.perimeterDuration + FILL_DURATION_S;
 
       if (ageSec >= total) {
         drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
@@ -167,11 +165,11 @@ export class BuildingsLayer {
         continue;
       }
       if (ageSec < node.perimeterDuration) {
-        drawPartialStroke(node.stroke, node.localPoly, ageSec / EDGE_DURATION, node.strokeColor);
+        drawPartialStroke(node.stroke, node.localPoly, ageSec / PERIMETER_EDGE_DURATION_S, node.strokeColor);
         node.fill.alpha = 0;
       } else {
         drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
-        const t = (ageSec - node.perimeterDuration) / FILL_DURATION;
+        const t = (ageSec - node.perimeterDuration) / FILL_DURATION_S;
         node.fill.alpha = t < 0 ? 0 : t > 1 ? 1 : t;
       }
     }
@@ -185,7 +183,7 @@ export class BuildingsLayer {
       if (!node) continue;
       const ageSec = simTime - f.spawnedAt;
       if (ageSec < node.perimeterDuration) {
-        drawPartialStroke(node.stroke, node.localPoly, ageSec / EDGE_DURATION, node.strokeColor);
+        drawPartialStroke(node.stroke, node.localPoly, ageSec / PERIMETER_EDGE_DURATION_S, node.strokeColor);
       } else if (!node.done) {
         drawFullStroke(node.stroke, node.localPoly, node.strokeColor);
         node.done = true;

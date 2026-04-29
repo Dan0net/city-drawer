@@ -1,39 +1,22 @@
 import { create } from 'zustand';
 import { Graph } from '@game/graph';
-import type { Anchor, EdgeId, EdgeKind, NodeId } from '@game/graph';
+import type { EdgeId, EdgeKind } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
+import { removeBuildingRestoring } from '@game/buildings/bulldoze';
 import {
-  HOUSE_COMMERCIAL_TOTAL,
-  HOUSE_LEISURE_TOTAL,
-  JOBS_PER_FACTORY,
-  PARK_HOUSES_SERVED,
-  SHOP_HOUSES_SERVED,
-} from '@game/buildings';
-import { pickFrontageOnEdge, placeBuildingOnFrontage } from '@game/buildings/spawn';
-import { clearCellsUnderPoly } from '@game/demand/cellMap';
-import { useUiStore } from '@game/store/uiStore';
+  beginOrCommitDraw as commitDraw,
+  type DrawCommitResult,
+} from '@game/drawing/commit';
 import {
-  applyDrawSnap,
-  computeSnap,
-  snapToAnchor,
-  type SnapResult,
-} from '@game/drawing/snap';
-import { subdivideStraight } from '@game/drawing/subdivide';
-import { findRoadCrossings } from '@game/roads/crossings';
-import {
-  buildingAtPoint,
-  buildingsWithPrimaryOn,
-  predictRoadBulldoze,
-  removeBuildingRestoring,
-} from '@game/buildings/bulldoze';
+  computePointerState,
+  type BulldozeHover,
+  type Tool,
+} from '@game/drawing/pointer';
+import type { SnapResult } from '@game/drawing/snap';
 import { createDemandMaps, type DemandMap } from '@game/demand/maps';
+import { createSpawnEngine } from '@game/sim/spawn';
 
-export type Tool = 'none' | 'road' | 'small_road' | 'path' | 'bulldoze';
-
-type BulldozeHover =
-  | { kind: 'edge'; id: EdgeId }
-  | { kind: 'node'; id: NodeId }
-  | { kind: 'building'; id: BuildingId };
+export type { Tool };
 
 interface WorldState {
   graph: Graph;
@@ -47,25 +30,22 @@ interface WorldState {
   pointerWorld: { x: number; y: number } | null;
   snap: SnapResult | null;
   bulldozeHover: BulldozeHover | null;
-  // Buildings the in-progress road would bulldoze on commit. Recomputed on
-  // each setPointer while drawingStart is set.
+  // Buildings the in-progress road would bulldoze on commit.
   bulldozePreview: BuildingId[];
   // Points where the in-progress road would cross existing edges. Each
   // becomes a real node on commit (splitting both lines).
   drawingCrossings: { x: number; y: number }[];
   // Auto-subdivision points along the in-progress road at ~100m spacing.
-  // Each becomes a free node on commit.
   drawingMidpoints: { x: number; y: number }[];
   simTime: number;
   paused: boolean;
   demandMaps: DemandMap[];
   // Bumped when any demand map's data changes (cell write, road-field rebuild).
-  // Renderer subscribes to this rather than to graphVersion directly.
   demandMapsVersion: number;
 
   setTool(t: Tool): void;
   toggleTool(t: Exclude<Tool, 'none'>): void;
-  setPointer(x: number, y: number, snapRadiusWorld: number): void;
+  setPointer(x: number, y: number, snapRadiusWorld: number, opts: { snapDraw: boolean }): void;
   clearPointer(): void;
   beginOrCommitDraw(kind: EdgeKind): void;
   cancelDraw(): void;
@@ -76,24 +56,20 @@ interface WorldState {
   togglePause(): void;
 }
 
-const SPAWN_INTERVAL_MIN = 0.4; // seconds
-const SPAWN_INTERVAL_MAX = 0.8;
-// Animation timings here mirror the renderer; we only need them so we know when
-// a failed-attempt visual is finished and can be pruned.
-const EDGE_DURATION_S = 0.2;
-const FAILED_HOLD_AFTER_PERIMETER_S = 1.2;
-
-// Hoisted out of the create() closure so the demand subscription below can
-// allocate ids when it auto-spawns factories. Only one store instance exists.
-let nextBuildingId = 1;
+const idleDrawingState = {
+  drawingStart: null as SnapResult | null,
+  bulldozeHover: null as BulldozeHover | null,
+  bulldozePreview: [] as BuildingId[],
+  drawingCrossings: [] as { x: number; y: number }[],
+  drawingMidpoints: [] as { x: number; y: number }[],
+};
 
 export const useWorldStore = create<WorldState>((set, get) => {
   const graph = new Graph();
   const buildings: Building[] = [];
   const failedAttempts: FailedAttempt[] = [];
-  let nextFailedId = 1;
-  let nextSpawnAt = SPAWN_INTERVAL_MIN + Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
   const demandMaps = createDemandMaps(1337);
+  const spawn = createSpawnEngine();
 
   return {
     graph,
@@ -115,272 +91,81 @@ export const useWorldStore = create<WorldState>((set, get) => {
     demandMaps,
     demandMapsVersion: 0,
 
-    setTool: (t) =>
-      set({
-        tool: t,
-        drawingStart: null,
-        bulldozeHover: null,
-        bulldozePreview: [],
-        drawingCrossings: [],
-        drawingMidpoints: [],
-      }),
+    setTool: (t) => set({ tool: t, ...idleDrawingState }),
 
     toggleTool: (t) =>
-      set((s) => ({
-        tool: s.tool === t ? 'none' : t,
-        drawingStart: null,
-        bulldozeHover: null,
-        bulldozePreview: [],
-        drawingCrossings: [],
-        drawingMidpoints: [],
-      })),
+      set((s) => ({ tool: s.tool === t ? 'none' : t, ...idleDrawingState })),
 
-    setPointer: (x, y, radius) => {
+    setPointer: (x, y, radius, opts) => {
       const { graph: g, tool, buildings: bs, drawingStart } = get();
-      const pointerWorld = { x, y };
-      if (tool === 'road' || tool === 'small_road' || tool === 'path') {
-        let newSnap = computeSnap(g, x, y, radius);
-        // Snap to existing node/edge always wins over angle+length snap so
-        // users can still aim at intersections and split points exactly.
-        if (
-          drawingStart &&
-          newSnap.kind === 'free' &&
-          useUiStore.getState().snapDraw
-        ) {
-          newSnap = applyDrawSnap(g, drawingStart, newSnap);
-        }
-        const preview = drawingStart
-          ? predictRoadBulldoze(drawingStart, newSnap, tool, bs)
-          : [];
-        const crossings = drawingStart ? findRoadCrossings(g, drawingStart, newSnap) : [];
-        // Midpoints subdivide each sub-segment between consecutive fixed points
-        // (start → crossing → crossing → end), so they can never land closer
-        // than ~50m to a crossing.
-        const midpoints: { x: number; y: number }[] = [];
-        if (drawingStart) {
-          let px = drawingStart.x;
-          let py = drawingStart.y;
-          for (const c of crossings) {
-            for (const m of subdivideStraight(px, py, c.x, c.y)) {
-              midpoints.push({ x: m.x, y: m.y });
-            }
-            px = c.x;
-            py = c.y;
-          }
-          for (const m of subdivideStraight(px, py, newSnap.x, newSnap.y)) {
-            midpoints.push({ x: m.x, y: m.y });
-          }
-        }
-        set({
-          pointerWorld,
-          snap: newSnap,
-          bulldozeHover: null,
-          bulldozePreview: preview,
-          drawingCrossings: crossings.map((c) => ({ x: c.x, y: c.y })),
-          drawingMidpoints: midpoints,
-        });
-      } else if (tool === 'bulldoze') {
-        const b = buildingAtPoint(bs, x, y);
-        if (b) {
-          set({
-            pointerWorld,
-            snap: null,
-            bulldozeHover: { kind: 'building', id: b.id },
-            bulldozePreview: [],
-          });
-          return;
-        }
-        const node = g.nearestNode(x, y, radius);
-        if (node) {
-          set({
-            pointerWorld,
-            snap: null,
-            bulldozeHover: { kind: 'node', id: node.id },
-            bulldozePreview: buildingsWithPrimaryOn(node.edges, bs),
-            drawingCrossings: [],
-            drawingMidpoints: [],
-          });
-          return;
-        }
-        const edge = g.nearestEdge(x, y, radius);
-        set({
-          pointerWorld,
-          snap: null,
-          bulldozeHover: edge ? { kind: 'edge', id: edge.edge.id } : null,
-          bulldozePreview: edge ? buildingsWithPrimaryOn(new Set([edge.edge.id]), bs) : [],
-          drawingCrossings: [],
-          drawingMidpoints: [],
-        });
-      } else {
-        set({
-          pointerWorld,
-          snap: null,
-          bulldozeHover: null,
-          bulldozePreview: [],
-          drawingCrossings: [],
-          drawingMidpoints: [],
-        });
-      }
+      set(computePointerState(g, bs, tool, drawingStart, x, y, radius, opts));
     },
 
     clearPointer: () =>
-      set({
-        pointerWorld: null,
-        snap: null,
-        bulldozeHover: null,
-        bulldozePreview: [],
-        drawingCrossings: [],
-        drawingMidpoints: [],
-      }),
+      set({ pointerWorld: null, snap: null, ...idleDrawingState, drawingStart: get().drawingStart }),
 
     beginOrCommitDraw: (kind) => {
       const { drawingStart, snap, graph: g, buildings: bs } = get();
       if (!snap) return;
-      if (!drawingStart) {
-        set({ drawingStart: snap });
+      const result: DrawCommitResult = commitDraw(g, bs, drawingStart, snap, kind);
+      if (result.kind === 'begin') {
+        set({ drawingStart: result.drawingStart });
         return;
       }
-      if (
-        drawingStart.kind === 'node' &&
-        snap.kind === 'node' &&
-        drawingStart.nodeId === snap.nodeId
-      ) {
-        set({
-          drawingStart: null,
-          bulldozePreview: [],
-          drawingCrossings: [],
-          drawingMidpoints: [],
-        });
+      if (result.kind === 'cancel') {
+        set({ drawingStart: null, bulldozePreview: [], drawingCrossings: [], drawingMidpoints: [] });
         return;
       }
-      // Capture predicted bulldoze targets BEFORE insertEdge — split anchors
-      // mutate the graph and would shift edge ids, but the buildings list
-      // is keyed by stable building id.
-      const toBulldoze = predictRoadBulldoze(drawingStart, snap, kind, bs);
-
-      // Where the new line crosses existing edges. Each becomes a split
-      // anchor so both the existing edge and the new line are split at the
-      // intersection. Computed BEFORE any insertEdge so edge ids are stable.
-      const crossings = findRoadCrossings(g, drawingStart, snap);
-      // Build the ordered anchor sequence: walk segments separated by
-      // crossings, and inside each segment drop ~100m midpoints. Crossings
-      // act as fixed dividers, so midpoints can never crowd a crossing.
-      const waypoints: Anchor[] = [];
-      {
-        let px = drawingStart.x;
-        let py = drawingStart.y;
-        for (const c of crossings) {
-          for (const m of subdivideStraight(px, py, c.x, c.y)) {
-            waypoints.push({ kind: 'free', x: m.x, y: m.y });
-          }
-          waypoints.push({ kind: 'split', edgeId: c.edgeId, t: c.s });
-          px = c.x;
-          py = c.y;
-        }
-        for (const m of subdivideStraight(px, py, snap.x, snap.y)) {
-          waypoints.push({ kind: 'free', x: m.x, y: m.y });
-        }
-      }
-
-      let currentAnchor: Anchor = snapToAnchor(drawingStart);
-      let lastResult: ReturnType<typeof g.insertEdge> = null;
-      for (const w of waypoints) {
-        const r = g.insertEdge(currentAnchor, w, kind);
-        if (!r) continue;
-        currentAnchor = { kind: 'node', nodeId: r.toId };
-        lastResult = r;
-      }
-      const finalResult = g.insertEdge(currentAnchor, snapToAnchor(snap), kind);
-      if (finalResult) lastResult = finalResult;
-
-      if (!lastResult) {
-        set({ bulldozePreview: [], drawingCrossings: [], drawingMidpoints: [] });
-        return;
-      }
-
-      let bumpBuildings = false;
-      for (const bid of toBulldoze) {
-        if (removeBuildingRestoring(g, bs, bid, null)) {
-          // restore happened — version already bumped inside graph
-        }
-        bumpBuildings = true;
-      }
-
-      const endNode = g.nodes.get(lastResult.toId);
       const patch: Partial<WorldState> = {
         graphVersion: g.version,
+        drawingStart: result.drawingStart,
         bulldozePreview: [],
         drawingCrossings: [],
         drawingMidpoints: [],
       };
-      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
-      patch.drawingStart = endNode
-        ? { kind: 'node', nodeId: endNode.id, x: endNode.x, y: endNode.y }
-        : null;
+      if (result.buildingsChanged) patch.buildingsVersion = get().buildingsVersion + 1;
       set(patch);
     },
 
-    cancelDraw: () =>
-      set({
-        drawingStart: null,
-        bulldozePreview: [],
-        drawingCrossings: [],
-        drawingMidpoints: [],
-      }),
+    cancelDraw: () => set({ ...idleDrawingState }),
 
     removeAtPointer: () => {
       const { graph: g, bulldozeHover, buildings: bs } = get();
       if (!bulldozeHover) return;
-      if (bulldozeHover.kind === 'edge') {
-        const eid = bulldozeHover.id;
-        const exclude = new Set<EdgeId>([eid]);
-        let bumpBuildings = false;
-        // Buildings whose PRIMARY (front) face is on this edge get bulldozed.
-        // Back/side contacts on this edge alone are tolerated and leave the
-        // building intact; their consumed entries against this edge become
-        // stale references that restoreFrontage no-ops on.
-        for (let i = bs.length - 1; i >= 0; i--) {
-          if (bs[i].consumed[0]?.edgeId === eid) {
-            removeBuildingRestoring(g, bs, bs[i].id, exclude);
-            bumpBuildings = true;
-          }
-        }
-        g.removeEdge(eid);
-        const patch: Partial<WorldState> = {
-          graphVersion: g.version,
-          bulldozeHover: null,
-        };
-        if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
-        set(patch);
-      } else if (bulldozeHover.kind === 'node') {
-        const nid = bulldozeHover.id;
-        const node = g.nodes.get(nid);
-        const incidentEdgeIds = new Set<EdgeId>(node ? node.edges : []);
-        let bumpBuildings = false;
-        for (let i = bs.length - 1; i >= 0; i--) {
-          const primaryEdge = bs[i].consumed[0]?.edgeId;
-          if (primaryEdge != null && incidentEdgeIds.has(primaryEdge)) {
-            removeBuildingRestoring(g, bs, bs[i].id, incidentEdgeIds);
-            bumpBuildings = true;
-          }
-        }
-        g.removeNode(nid);
-        const patch: Partial<WorldState> = {
-          graphVersion: g.version,
-          bulldozeHover: null,
-        };
-        if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
-        set(patch);
-      } else {
-        // Same path as road-bulldoze removals: restores frontage + decrements
-        // attributed factory's jobsFilled if this was a house.
+      if (bulldozeHover.kind === 'building') {
         const bumpGraph = removeBuildingRestoring(g, bs, bulldozeHover.id, null);
         set({
           buildingsVersion: get().buildingsVersion + 1,
           bulldozeHover: null,
           ...(bumpGraph ? { graphVersion: g.version } : {}),
         });
+        return;
       }
+      // Edge or node removal — collect the affected edges, bulldoze any
+      // building whose primary face sits on one of them, then drop the edge/node.
+      const affected = new Set<EdgeId>();
+      if (bulldozeHover.kind === 'edge') {
+        affected.add(bulldozeHover.id);
+      } else {
+        const node = g.nodes.get(bulldozeHover.id);
+        if (node) for (const eid of node.edges) affected.add(eid);
+      }
+      let bumpBuildings = false;
+      for (let i = bs.length - 1; i >= 0; i--) {
+        const primaryEdge = bs[i].consumed[0]?.edgeId;
+        if (primaryEdge != null && affected.has(primaryEdge)) {
+          removeBuildingRestoring(g, bs, bs[i].id, affected);
+          bumpBuildings = true;
+        }
+      }
+      if (bulldozeHover.kind === 'edge') g.removeEdge(bulldozeHover.id);
+      else g.removeNode(bulldozeHover.id);
+      const patch: Partial<WorldState> = {
+        graphVersion: g.version,
+        bulldozeHover: null,
+      };
+      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+      set(patch);
     },
 
     clearBuildings: () => {
@@ -411,8 +196,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
         graphVersion: g.version,
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
-        drawingStart: null,
-        bulldozeHover: null,
+        ...idleDrawingState,
       });
     },
 
@@ -420,104 +204,20 @@ export const useWorldStore = create<WorldState>((set, get) => {
       const s = get();
       if (s.paused) return;
       const newSimTime = s.simTime + dt;
-
-      let bumpBuildings = false;
-      let bumpFailed = false;
-      let bumpGraph = false;
-
-      if (newSimTime >= nextSpawnAt) {
-        const pick = pickHighestDemand(s, Math.random);
-        if (pick && hasEnoughDemand(s, pick)) {
-          const front = pickFrontageOnEdge(s.graph, pick.edgeId, Math.random);
-          if (front) {
-            const result = placeBuildingOnFrontage(
-              { graph: s.graph, buildings: s.buildings },
-              front,
-              pick.kind,
-              newSimTime,
-              Math.random,
-            );
-            if (result.kind === 'success') {
-              const newBuilding: Building = { ...result.building, id: nextBuildingId++ };
-              if (pick.kind === 'factory') {
-                newBuilding.jobsTotal = JOBS_PER_FACTORY;
-                newBuilding.jobsFilled = 0;
-                const resourceMap = s.demandMaps.find((m) => m.id === 'resource');
-                if (resourceMap) {
-                  clearCellsUnderPoly(
-                    resourceMap.cellMap,
-                    newBuilding.poly,
-                    newBuilding.aabb,
-                  );
-                }
-              } else if (pick.kind === 'small_house') {
-                const factories = nearestBuildingsWithSlot(
-                  s.graph,
-                  s.buildings,
-                  newBuilding.centroid,
-                  (b) =>
-                    b.type === 'factory' && (b.jobsFilled ?? 0) < (b.jobsTotal ?? 0),
-                  1,
-                );
-                if (factories.length > 0) {
-                  const f = factories[0];
-                  newBuilding.attributedToIds = [f.id];
-                  f.jobsFilled = (f.jobsFilled ?? 0) + 1;
-                }
-              } else if (pick.kind === 'shop' || pick.kind === 'park') {
-                const isShop = pick.kind === 'shop';
-                const houses = nearestBuildingsWithSlot(
-                  s.graph,
-                  s.buildings,
-                  newBuilding.centroid,
-                  (b) =>
-                    b.type === 'small_house' &&
-                    (isShop
-                      ? (b.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL
-                      : (b.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL),
-                  isShop ? SHOP_HOUSES_SERVED : PARK_HOUSES_SERVED,
-                );
-                newBuilding.attributedToIds = houses.map((h) => h.id);
-                for (const h of houses) {
-                  if (isShop) h.commercialFilled = (h.commercialFilled ?? 0) + 1;
-                  else h.leisureFilled = (h.leisureFilled ?? 0) + 1;
-                }
-              }
-              s.buildings.push(newBuilding);
-              for (const c of newBuilding.consumed) {
-                if (s.graph.consumeFrontage(c.edgeId, c.side, c.t0, c.t1)) {
-                  bumpGraph = true;
-                }
-              }
-              bumpBuildings = true;
-            } else if (result.kind === 'failure') {
-              s.failedAttempts.push({ ...result.failure, id: nextFailedId++ });
-              bumpFailed = true;
-            }
-          }
-        }
-        nextSpawnAt =
-          newSimTime +
-          SPAWN_INTERVAL_MIN +
-          Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN);
-      }
-
-      // Prune failed attempts whose visualization has run its course.
-      // Lifetime = perimeter animation (numEdges * EDGE_DURATION) + a hold beat.
-      const fa = s.failedAttempts;
-      while (fa.length > 0) {
-        const att = fa[0];
-        const lifetime =
-          (att.poly.length / 2) * EDGE_DURATION_S + FAILED_HOLD_AFTER_PERIMETER_S;
-        if (newSimTime - att.spawnedAt < lifetime) break;
-        fa.shift();
-        bumpFailed = true;
-      }
-
+      const r = spawn.tick(
+        {
+          graph: s.graph,
+          buildings: s.buildings,
+          failedAttempts: s.failedAttempts,
+          demandMaps: s.demandMaps,
+        },
+        newSimTime,
+        Math.random,
+      );
       const patch: Partial<WorldState> = { simTime: newSimTime };
-      if (bumpBuildings) patch.buildingsVersion = s.buildingsVersion + 1;
-      if (bumpFailed) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
-      if (bumpGraph) patch.graphVersion = s.graph.version;
+      if (r.buildingsChanged) patch.buildingsVersion = s.buildingsVersion + 1;
+      if (r.failedChanged) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
+      if (r.graphChanged) patch.graphVersion = s.graph.version;
       set(patch);
     },
 
@@ -525,9 +225,9 @@ export const useWorldStore = create<WorldState>((set, get) => {
   };
 });
 
-// Demand-map road fields are derived from graph + buildings + cell data.
-// Recompute whenever either the graph or the building list changes; the
-// next sim tick then picks the highest-demand thing to spawn.
+// Demand-map road fields are derived from graph + buildings. Recompute
+// whenever either changes; the next sim tick then picks the highest-demand
+// thing to spawn.
 {
   let lastGraphVersion = -1;
   let lastBuildingsVersion = -1;
@@ -547,151 +247,3 @@ export const useWorldStore = create<WorldState>((set, get) => {
   useWorldStore.subscribe(recompute);
 }
 
-// ---------- demand-driven spawn picker ----------
-//
-// Tier 1: houses, shops, parks compete in a single weighted pool. Their raw
-// road-field scores are different magnitudes (jobs scales 0..8, services 0..2),
-// so jobs dominates while there's slack for new houses; once houses settle in,
-// commercial/leisure scores grow and shops/parks start winning. Score-scale
-// drives the priority — no explicit gating between them.
-// Tier 2 (fallback): factories on hot resource edges, only when no tier-1
-// demand exists anywhere — this enforces the original "fill jobs before
-// building the next factory" loop.
-const RESOURCE_FACTORY_THRESHOLD = 0.2;
-const COMMERCIAL_THRESHOLD = 1.5;
-const LEISURE_THRESHOLD = 1.5;
-type DemandKind = 'small_house' | 'shop' | 'park' | 'factory';
-type DemandPick = { kind: DemandKind; edgeId: EdgeId; score: number };
-
-function pickHighestDemand(s: WorldState, rand: () => number): DemandPick | null {
-  // Count houses with slack so we can exclude shop/park tiers entirely when
-  // the world can't fulfil a 1:N attribution. Without this, a tier-1 pool
-  // full of unfulfillable shop/park candidates blocks tier-2 (factory) from
-  // ever running.
-  let commercialSlack = 0;
-  let leisureSlack = 0;
-  for (const b of s.buildings) {
-    if (b.type !== 'small_house') continue;
-    if ((b.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL) commercialSlack++;
-    if ((b.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL) leisureSlack++;
-  }
-
-  const candidates: DemandPick[] = [];
-  let total = 0;
-  const accumulate = (kind: DemandKind, mapId: string, threshold: number): void => {
-    const map = s.demandMaps.find((m) => m.id === mapId);
-    if (!map) return;
-    for (const e of s.graph.edges.values()) {
-      const va = map.roadField.get(e.from) ?? 0;
-      const vb = map.roadField.get(e.to) ?? 0;
-      const v = (va + vb) * 0.5;
-      if (v > threshold) {
-        candidates.push({ kind, edgeId: e.id, score: v });
-        total += v;
-      }
-    }
-  };
-  accumulate('small_house', 'jobs', 0);
-  if (commercialSlack >= SHOP_HOUSES_SERVED) {
-    accumulate('shop', 'commercial', COMMERCIAL_THRESHOLD);
-  }
-  if (leisureSlack >= PARK_HOUSES_SERVED) {
-    accumulate('park', 'leisure', LEISURE_THRESHOLD);
-  }
-  if (total > 0) return rouletteOne(candidates, total, rand);
-
-  // Tier 2 — only if nothing in tier 1.
-  accumulate('factory', 'resource', RESOURCE_FACTORY_THRESHOLD);
-  if (total > 0) return rouletteOne(candidates, total, rand);
-  return null;
-}
-
-function rouletteOne(
-  candidates: DemandPick[],
-  total: number,
-  rand: () => number,
-): DemandPick {
-  let r = rand() * total;
-  for (const c of candidates) {
-    r -= c.score;
-    if (r <= 0) return c;
-  }
-  return candidates[candidates.length - 1];
-}
-
-// Up to `max` buildings (graph-distance from `center`) matching `filter`,
-// in distance order. Used by the spawner to attribute one factory to a
-// house, or N houses to a shop / park. Multiple candidate buildings may
-// share the same nearest node (a cluster of houses on one node), so the
-// per-node bucket is a list, not a single entry.
-const ATTRIBUTION_NEAREST_RADIUS = 96;
-
-function nearestBuildingsWithSlot(
-  graph: Graph,
-  buildings: Building[],
-  center: { x: number; y: number },
-  filter: (b: Building) => boolean,
-  max: number,
-): Building[] {
-  const out: Building[] = [];
-  if (max <= 0) return out;
-  const start = graph.nearestNode(center.x, center.y, ATTRIBUTION_NEAREST_RADIUS);
-  if (!start) return out;
-  const candidatesByNode = new Map<NodeId, Building[]>();
-  for (const b of buildings) {
-    if (!filter(b)) continue;
-    const n = graph.nearestNode(b.centroid.x, b.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-    if (!n) continue;
-    let bucket = candidatesByNode.get(n.id);
-    if (!bucket) {
-      bucket = [];
-      candidatesByNode.set(n.id, bucket);
-    }
-    bucket.push(b);
-  }
-  if (candidatesByNode.size === 0) return out;
-  const visited = new Set<NodeId>([start.id]);
-  const queue: NodeId[] = [start.id];
-  while (queue.length > 0 && out.length < max) {
-    const n = queue.shift()!;
-    const bucket = candidatesByNode.get(n);
-    if (bucket) {
-      for (const b of bucket) {
-        out.push(b);
-        if (out.length >= max) return out;
-      }
-    }
-    const node = graph.nodes.get(n);
-    if (!node) continue;
-    for (const eid of node.edges) {
-      const e = graph.edges.get(eid);
-      if (!e) continue;
-      const other = e.from === n ? e.to : e.from;
-      if (!visited.has(other)) {
-        visited.add(other);
-        queue.push(other);
-      }
-    }
-  }
-  return out;
-}
-
-// Pre-spawn gate: only allow shop/park to spawn if enough houses with slack
-// are reachable from the candidate edge. Without this, a shop spawns on
-// thin demand and only attributes to a few houses, breaking the 1:N ratio.
-function hasEnoughDemand(s: WorldState, pick: DemandPick): boolean {
-  if (pick.kind !== 'shop' && pick.kind !== 'park') return true;
-  const e = s.graph.edges.get(pick.edgeId);
-  if (!e) return false;
-  const a = s.graph.nodes.get(e.from)!;
-  const b = s.graph.nodes.get(e.to)!;
-  const center = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
-  const isShop = pick.kind === 'shop';
-  const filter = (x: Building): boolean =>
-    x.type === 'small_house' &&
-    (isShop
-      ? (x.commercialFilled ?? 0) < HOUSE_COMMERCIAL_TOTAL
-      : (x.leisureFilled ?? 0) < HOUSE_LEISURE_TOTAL);
-  const need = isShop ? SHOP_HOUSES_SERVED : PARK_HOUSES_SERVED;
-  return nearestBuildingsWithSlot(s.graph, s.buildings, center, filter, need).length >= need;
-}
