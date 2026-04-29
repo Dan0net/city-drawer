@@ -215,12 +215,6 @@ export function placeBuildingOnFrontage(
   const fallbackX = from.x + dx * fallbackT;
   const fallbackY = from.y + dy * fallbackT;
   if (!layout) {
-    console.log('[spawn] fail: frontage_too_short', {
-      edgeId: edge.id,
-      type: typeName,
-      available: intervalWorld,
-      frontMin,
-    });
     return {
       kind: 'failure',
       failure: makePlaceholder(
@@ -236,18 +230,10 @@ export function placeBuildingOnFrontage(
   const xCapNeg = -W / 2;
   const xCapPos = W / 2;
 
-  const fail = (reason: string, details?: Record<string, unknown>): SpawnResult => {
-    console.log(`[spawn] fail: ${reason}`, {
-      edgeId: edge.id,
-      type: typeName,
-      anchor: { x: anchorX, y: anchorY },
-      ...details,
-    });
-    return {
-      kind: 'failure',
-      failure: makePlaceholder(anchorX, anchorY, tx, ty, nx, ny, clearance, simTime, reason),
-    };
-  };
+  const fail = (reason: string): SpawnResult => ({
+    kind: 'failure',
+    failure: makePlaceholder(anchorX, anchorY, tx, ty, nx, ny, clearance, simTime, reason),
+  });
 
   const xs: number[] = [];
   const depths: number[] = [];
@@ -264,7 +250,7 @@ export function placeBuildingOnFrontage(
     const oy = anchorY + ty * x + ny * rayOffset;
     depths.push(freeDepthAt(ctx, ox, oy, nx, ny, MAX_DEPTH));
   }
-  if (xs.length === 0) return fail('no_slices', { xCapNeg, xCapPos });
+  if (xs.length === 0) return fail('no_slices');
 
   let centerIdx = 0;
   let bestAbs = Infinity;
@@ -276,7 +262,7 @@ export function placeBuildingOnFrontage(
     }
   }
   if (depths[centerIdx] < MIN_DEPTH) {
-    return fail('anchor_blocked', { depth: depths[centerIdx], minDepth: MIN_DEPTH });
+    return fail('anchor_blocked');
   }
 
   let leftIdx = centerIdx;
@@ -291,17 +277,8 @@ export function placeBuildingOnFrontage(
       clearance, xs, depths, leftIdx, rightIdx,
       simTime, 'usable_width_too_small',
     );
-    if (envelope) {
-      console.log('[spawn] fail: usable_width_too_small', {
-        edgeId: edge.id,
-        type: typeName,
-        anchor: { x: anchorX, y: anchorY },
-        usableWidth,
-        frontMin,
-      });
-      return { kind: 'failure', failure: envelope };
-    }
-    return fail('usable_width_too_small', { usableWidth, frontMin });
+    if (envelope) return { kind: 'failure', failure: envelope };
+    return fail('usable_width_too_small');
   }
 
   // Wise picking already chose W ≤ frontMax + SLIVER_GAP, so no further
@@ -309,7 +286,7 @@ export function placeBuildingOnFrontage(
   const useLeft = leftIdx;
   const useRight = rightIdx;
   const finalWidth = xs[useRight] - xs[useLeft];
-  if (finalWidth < frontMin) return fail('final_width_too_small', { finalWidth, frontMin });
+  if (finalWidth < frontMin) return fail('final_width_too_small');
 
   let lastBuilt: PlacedPoly | null = null;
   for (const factor of SHRINK_FACTORS) {
@@ -370,13 +347,6 @@ export function placeBuildingOnFrontage(
   }
 
   if (lastBuilt) {
-    console.log('[spawn] fail: area_below_threshold', {
-      edgeId: edge.id,
-      type: typeName,
-      area: lastBuilt.area,
-      targetArea: sampledTargetArea,
-      minRatio: MIN_AREA_RATIO,
-    });
     return {
       kind: 'failure',
       failure: {
@@ -388,7 +358,7 @@ export function placeBuildingOnFrontage(
       },
     };
   }
-  return fail('no_polygon_buildable', { finalWidth, targetArea: sampledTargetArea });
+  return fail('no_polygon_buildable');
 }
 
 // ---------- polygon construction ----------

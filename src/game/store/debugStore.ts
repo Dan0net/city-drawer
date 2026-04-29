@@ -1,0 +1,49 @@
+import { create } from 'zustand';
+import type { BuildingId, BuildingType } from '@game/buildings';
+
+const BUFFER_LIMIT = 200;
+
+interface AttributionRecord {
+  sourceId: BuildingId;
+  filledAfter: number;
+}
+
+export type SpawnEvent = {
+  id: number;
+  t: number; // sim seconds
+  ok: boolean;
+  demandId: string;
+  sinkType: BuildingType;
+} & (
+  | {
+      ok: true;
+      sourceType: BuildingType | 'cells';
+      sourceCapacity: number;
+      attributions: AttributionRecord[];
+      targetCount: number;
+    }
+  | { ok: false; reason: string }
+);
+
+interface DebugState {
+  events: SpawnEvent[];
+  // Bumped on each push so subscribers can re-render without deep-equal checks.
+  version: number;
+  push(e: Omit<SpawnEvent, 'id'>): void;
+  clear(): void;
+}
+
+let nextId = 1;
+
+export const useDebugStore = create<DebugState>((set) => ({
+  events: [],
+  version: 0,
+  push: (e) =>
+    set((s) => {
+      const event = { ...e, id: nextId++ } as SpawnEvent;
+      const next = [event, ...s.events];
+      if (next.length > BUFFER_LIMIT) next.length = BUFFER_LIMIT;
+      return { events: next, version: s.version + 1 };
+    }),
+  clear: () => set({ events: [], version: 0 }),
+}));

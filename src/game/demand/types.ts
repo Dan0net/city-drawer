@@ -53,7 +53,6 @@ const ramp = (r0: number, r1: number, g0: number, g1: number, b0: number, b1: nu
   };
 
 const SERVICE_DECAY = 0.7;
-const SERVICE_SAT = 1 / (1 - SERVICE_DECAY); // ≈3.3
 
 export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
   {

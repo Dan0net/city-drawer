@@ -15,6 +15,7 @@ import {
 import type { SnapResult } from '@game/drawing/snap';
 import { createDemandMaps, type DemandMap } from '@game/demand/maps';
 import { createSpawnEngine } from '@game/sim/spawn';
+import { useDebugStore } from '@game/store/debugStore';
 
 export type { Tool };
 
@@ -69,7 +70,9 @@ export const useWorldStore = create<WorldState>((set, get) => {
   const buildings: Building[] = [];
   const failedAttempts: FailedAttempt[] = [];
   const demandMaps = createDemandMaps(1337);
-  const spawn = createSpawnEngine();
+  const spawn = createSpawnEngine({
+    onEvent: (e) => useDebugStore.getState().push(e),
+  });
 
   return {
     graph,
