@@ -115,9 +115,15 @@ function createJobsMap(): DemandMap {
 // commercial slots, parks consume leisure slots.
 const SERVICE_DECAY = 0.7;
 
+// Service road-fields sum BFS contributions from many house sources, so the
+// natural cap at any node is 1/(1-decay) ≈ 3.3 with decay 0.7 — much higher
+// than a single source's value. Use that cap as the palette saturation
+// point so a typical cluster reads as partial colour, matching jobs.
+const SERVICE_PALETTE_SATURATION = 1 / (1 - SERVICE_DECAY);
+
 const commercialPalette: Palette = (v, out, o) => {
   // Indigo — distinct from teal jobs and ochre resource.
-  const k = Math.max(0, Math.min(1, v / 2));
+  const k = Math.max(0, Math.min(1, v / SERVICE_PALETTE_SATURATION));
   out[o] = Math.round(60 + 60 * k);
   out[o + 1] = Math.round(60 + 80 * k);
   out[o + 2] = Math.round(140 + 100 * k);
@@ -126,7 +132,7 @@ const commercialPalette: Palette = (v, out, o) => {
 
 const leisurePalette: Palette = (v, out, o) => {
   // Mossy green — distinct from the other three.
-  const k = Math.max(0, Math.min(1, v / 2));
+  const k = Math.max(0, Math.min(1, v / SERVICE_PALETTE_SATURATION));
   out[o] = Math.round(60 + 70 * k);
   out[o + 1] = Math.round(120 + 80 * k);
   out[o + 2] = Math.round(70 + 60 * k);
