@@ -1,11 +1,10 @@
 import type { Graph } from '@game/graph';
-import type { Building } from '@game/buildings';
+import { buildingAnchor, type Building } from '@game/buildings';
 import {
   CELL_SAMPLE_RADIUS,
   CELL_SIZE,
   FIELD_SPLAT_RADIUS,
   GRID_RES,
-  SOURCE_ANCHOR_RADIUS,
   WORLD_MIN,
 } from '@game/sim/config';
 import { createCellMap, type CellMap } from './cellMap';
@@ -97,9 +96,9 @@ function createDemandMap(def: DemandDef, seed: number): DemandMap {
         if (b.type !== sourceType) continue;
         const remaining = capacity - slotsGivenBy(ledger, b.id);
         if (remaining <= 0) continue;
-        const node = ctx.graph.nearestNode(b.centroid.x, b.centroid.y, SOURCE_ANCHOR_RADIUS);
-        if (!node) continue;
-        bfsDecay(ctx.graph, node.id, remaining, def.decay, roadField);
+        const anchor = buildingAnchor(ctx.graph, b);
+        if (anchor == null) continue;
+        bfsDecay(ctx.graph, anchor, remaining, def.decay, roadField);
       }
       let max = 0;
       for (const v of roadField.values()) if (v > max) max = v;

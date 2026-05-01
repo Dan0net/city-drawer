@@ -1,10 +1,22 @@
-import type { ConsumedFrontage } from '@game/graph';
+import type { ConsumedFrontage, Graph, NodeId } from '@game/graph';
 import type { AABB } from '@lib/aabb';
 import type { Vec2 } from '@lib/math';
 
 export type BuildingId = number;
 export type FailedAttemptId = number;
 export type BuildingType = 'small_house' | 'shop' | 'warehouse' | 'park' | 'factory';
+
+// The graph node a building anchors to: the endpoint of its primary frontage
+// edge nearer to where the building meets the road. Derived from
+// `consumed[0]` (which the reconciler keeps remapped through splits), so
+// every caller agrees on the anchor without Euclidean fallbacks.
+export function buildingAnchor(graph: Graph, b: Building): NodeId | null {
+  const c = b.consumed[0];
+  if (!c) return null;
+  const e = graph.edges.get(c.edgeId);
+  if (!e) return null;
+  return (c.t0 + c.t1) * 0.5 < 0.5 ? e.from : e.to;
+}
 
 export interface Building {
   id: BuildingId;

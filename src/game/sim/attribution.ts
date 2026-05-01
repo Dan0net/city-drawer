@@ -1,15 +1,16 @@
 import type { EdgeId, Graph, NodeId } from '@game/graph';
 import { bfsParents, pathEdgesFromParents, type BfsParent } from '@game/graph/path';
-import type { Building, BuildingId } from '@game/buildings';
+import { buildingAnchor, type Building, type BuildingId } from '@game/buildings';
 import { DEMAND_TYPES, type DemandDef, type DemandId } from '@game/demand/types';
-import { ATTRIBUTION_NEAREST_RADIUS } from '@game/sim/config';
 
 export interface Link {
   sourceId: BuildingId;
   sinkId: BuildingId;
   slots: number;
-  // Path used at attribution time, source-anchor → sink-anchor. Stored so
-  // we can subtract traffic on drop and reroute when an edge is bulldozed.
+  // Source-anchor node id — the start of `edges`. Pinned at attribution time
+  // so path replay (hover viz, future re-routing) walks the same node
+  // sequence the BFS used, even after splits remap consumed edges.
+  sourceAnchor: NodeId;
   edges: EdgeId[];
 }
 
@@ -161,14 +162,16 @@ const getOrCreateInner = <K, V>(m: Map<K, Map<K, V>>, k: K): Map<K, V> => {
 
 // Add `slots` from sourceId to sinkId. New pair → store path + index by edge.
 // Existing pair → bump slots, traffic credits along the original path; the
-// freshly-walked `edges` arg is ignored. Keeping the original path means a
-// link's recorded route stays valid until its edges are explicitly dropped
-// (via building or edge bulldoze), at which point the link goes too.
+// freshly-walked `edges`/`sourceAnchor` are ignored. Keeping the original
+// path means a link's recorded route stays valid until its edges are
+// explicitly dropped (via building or edge bulldoze), at which point the
+// link goes too.
 const addAttribution = (
   ledger: AttributionLedger,
   sinkId: BuildingId,
   sourceId: BuildingId,
   slots: number,
+  sourceAnchor: NodeId,
   edges: EdgeId[],
   traffic: TrafficState,
 ): void => {
@@ -179,7 +182,7 @@ const addAttribution = (
     existing.slots += slots;
     creditTraffic(traffic, existing.edges, slots);
   } else {
-    const link: Link = { sourceId, sinkId, slots, edges };
+    const link: Link = { sourceId, sinkId, slots, sourceAnchor, edges };
     sinkInner.set(sourceId, link);
     getOrCreateInner(ledger.bySource, sourceId).set(sinkId, link);
     indexLink(ledger, link);
@@ -275,7 +278,7 @@ interface FillCtx {
   traffic: TrafficState;
 }
 
-const bucketByNearestNode = (
+const bucketByAnchor = (
   graph: Graph,
   buildings: Building[],
   predicate: (b: Building) => boolean,
@@ -283,11 +286,11 @@ const bucketByNearestNode = (
   const buckets = new Map<NodeId, Building[]>();
   for (const b of buildings) {
     if (!predicate(b)) continue;
-    const n = graph.nearestNode(b.centroid.x, b.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-    if (!n) continue;
-    const list = buckets.get(n.id);
+    const anchor = buildingAnchor(graph, b);
+    if (anchor == null) continue;
+    const list = buckets.get(anchor);
     if (list) list.push(b);
-    else buckets.set(n.id, [b]);
+    else buckets.set(anchor, [b]);
   }
   return buckets;
 };
@@ -327,18 +330,18 @@ export function fillFromNewSink(sinkId: BuildingId, def: DemandDef, ctx: FillCtx
   if (!sink) return;
   let remaining = sinkSlotDemand(sink, def) - slotsClaimedBy(ledger, sinkId);
   if (remaining <= 0) return;
-  const start = ctx.graph.nearestNode(sink.centroid.x, sink.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-  if (!start) return;
+  const startId = buildingAnchor(ctx.graph, sink);
+  if (startId == null) return;
   const sourceType = def.source.type;
   const capacity = def.source.capacity;
-  const buckets = bucketByNearestNode(
+  const buckets = bucketByAnchor(
     ctx.graph,
     ctx.buildings,
     (b) => b.type === sourceType && capacity - slotsGivenBy(ledger, b.id) > 0,
   );
   if (buckets.size === 0) return;
-  const parents = bfsParents(ctx.graph, start.id);
-  walkBfsLayers(parents, start.id, ctx.graph, (n) => {
+  const parents = bfsParents(ctx.graph, startId);
+  walkBfsLayers(parents, startId, ctx.graph, (n) => {
     const list = buckets.get(n);
     if (!list) return false;
     for (const src of list) {
@@ -346,12 +349,12 @@ export function fillFromNewSink(sinkId: BuildingId, def: DemandDef, ctx: FillCtx
       const slack = capacity - slotsGivenBy(ledger, src.id);
       if (slack <= 0) continue;
       const give = Math.min(slack, remaining);
-      const sourceAnchor = ctx.graph.nearestNode(src.centroid.x, src.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-      if (!sourceAnchor) continue;
+      const sourceAnchorId = buildingAnchor(ctx.graph, src);
+      if (sourceAnchorId == null) continue;
       // Path runs source→sink; parents map was built from sink, so reverse.
-      const sinkToSource = pathEdgesFromParents(parents, sourceAnchor.id);
+      const sinkToSource = pathEdgesFromParents(parents, sourceAnchorId);
       const edges = sinkToSource.slice().reverse();
-      addAttribution(ledger, sinkId, src.id, give, edges, ctx.traffic);
+      addAttribution(ledger, sinkId, src.id, give, sourceAnchorId, edges, ctx.traffic);
       remaining -= give;
     }
     return remaining <= 0;
@@ -368,17 +371,17 @@ export function fillFromNewSource(sourceId: BuildingId, def: DemandDef, ctx: Fil
   const capacity = def.source.capacity;
   let slack = capacity - slotsGivenBy(ledger, sourceId);
   if (slack <= 0) return;
-  const start = ctx.graph.nearestNode(source.centroid.x, source.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-  if (!start) return;
+  const startId = buildingAnchor(ctx.graph, source);
+  if (startId == null) return;
   const sinkType = def.sink.type;
-  const buckets = bucketByNearestNode(
+  const buckets = bucketByAnchor(
     ctx.graph,
     ctx.buildings,
     (b) => b.type === sinkType && sinkSlotDemand(b, def) - slotsClaimedBy(ledger, b.id) > 0,
   );
   if (buckets.size === 0) return;
-  const parents = bfsParents(ctx.graph, start.id);
-  walkBfsLayers(parents, start.id, ctx.graph, (n) => {
+  const parents = bfsParents(ctx.graph, startId);
+  walkBfsLayers(parents, startId, ctx.graph, (n) => {
     const list = buckets.get(n);
     if (!list) return false;
     for (const sink of list) {
@@ -386,10 +389,10 @@ export function fillFromNewSource(sourceId: BuildingId, def: DemandDef, ctx: Fil
       const need = sinkSlotDemand(sink, def) - slotsClaimedBy(ledger, sink.id);
       if (need <= 0) continue;
       const give = Math.min(slack, need);
-      const sinkAnchor = ctx.graph.nearestNode(sink.centroid.x, sink.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
-      if (!sinkAnchor) continue;
-      const edges = pathEdgesFromParents(parents, sinkAnchor.id);
-      addAttribution(ledger, sink.id, sourceId, give, edges, ctx.traffic);
+      const sinkAnchorId = buildingAnchor(ctx.graph, sink);
+      if (sinkAnchorId == null) continue;
+      const edges = pathEdgesFromParents(parents, sinkAnchorId);
+      addAttribution(ledger, sink.id, sourceId, give, startId, edges, ctx.traffic);
       slack -= give;
     }
     return slack <= 0;

@@ -3,7 +3,6 @@ import type { EdgeId, Graph } from '@game/graph';
 import type { Building, BuildingId } from '@game/buildings';
 import type { AttributionLedgers, Link } from '@game/sim/attribution';
 import { DEMAND_TYPES, type DemandDef, type DemandId } from '@game/demand/types';
-import { ATTRIBUTION_NEAREST_RADIUS } from '@game/sim/config';
 import type { BulldozeHover } from '@game/drawing/pointer';
 import { useWorldStore } from '@game/store/worldStore';
 
@@ -263,11 +262,11 @@ function polylineFromLink(
   const sf = frontPoint(graph, source);
   const tf = frontPoint(graph, sink);
   if (!sf || !tf) return null;
-  const startNode = graph.nearestNode(source.centroid.x, source.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
+  const startNode = graph.nodes.get(link.sourceAnchor);
   if (!startNode) return null;
 
   const pts: number[] = [source.centroid.x, source.centroid.y, sf.x, sf.y];
-  let cur = startNode.id;
+  let cur = link.sourceAnchor;
   pts.push(startNode.x, startNode.y);
   for (const eid of link.edges) {
     const e = graph.edges.get(eid);
