@@ -64,6 +64,27 @@ export function splatRoadFieldToCells(
   }
 }
 
+// Total resource value the road network has spatial reach into. For each
+// graph node, marks every cell within `radius` as covered; then sums covered
+// cells' values once (each cell counted at most once, regardless of how many
+// node discs it falls inside) and scales by cell area so the result is in
+// "resource-value × m²" — units of "amount of resource the network can
+// consume". Monotonic in road coverage of the cell layer; unaffected by
+// densifying roads in already-covered regions.
+export function reachableCellSum(cellMap: CellMap, graph: Graph, radius: number): number {
+  const covered = new Uint8Array(cellMap.cols * cellMap.rows);
+  for (const node of graph.nodes.values()) {
+    forEachCellInRadius(cellMap, node.x, node.y, radius, (_v, _d, i, j) => {
+      covered[j * cellMap.cols + i] = 1;
+    });
+  }
+  let sum = 0;
+  for (let i = 0; i < cellMap.data.length; i++) {
+    if (covered[i]) sum += cellMap.data[i];
+  }
+  return sum * cellMap.cellSize * cellMap.cellSize;
+}
+
 // Distance-decayed flood fill from `startNode` along graph edges. Each hop
 // multiplies the carried value by `decay`; if a node is reached by multiple
 // paths, the larger value wins. Adds the result onto `out` (sum across calls)

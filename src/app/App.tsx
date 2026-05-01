@@ -3,6 +3,7 @@ import { CanvasHost } from '@ui/CanvasHost';
 import { Toolbar } from '@ui/Toolbar';
 import { Hud } from '@ui/Hud';
 import { DebugPanel } from '@ui/DebugPanel';
+import { HoverTooltip } from '@ui/HoverTooltip';
 
 export function App() {
   const [fps, setFps] = useState(0);
@@ -13,6 +14,7 @@ export function App() {
       <Toolbar />
       <Hud fps={fps} />
       <DebugPanel />
+      <HoverTooltip />
     </div>
   );
 }

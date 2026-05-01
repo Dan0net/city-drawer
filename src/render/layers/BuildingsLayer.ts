@@ -13,6 +13,7 @@ import { PERIMETER_EDGE_DURATION_S, FILL_DURATION_S } from '@game/sim/animation'
 const STROKE_WIDTH = 1.2;
 const DOT_RADIUS = 0.9;
 const BULLDOZE = 0xe55050;
+const INSPECT = 0xf5c542;
 const FAIL_COLOR = 0xe55050;
 
 interface Node {
@@ -35,7 +36,7 @@ export class BuildingsLayer {
   private failedNodes = new Map<FailedAttemptId, Node>();
   private lastBuildingsVersion = -1;
   private lastFailedVersion = -1;
-  private lastHover: number | null = null;
+  private lastHover: string | null = null;
   private lastPreviewKey = '';
 
   constructor() {
@@ -58,9 +59,15 @@ export class BuildingsLayer {
     this.applyConfirmedAnimation(s.buildings, s.simTime);
     this.applyFailedAnimation(s.failedAttempts, s.simTime);
 
-    const hoverId = s.bulldozeHover?.kind === 'building' ? s.bulldozeHover.id : null;
-    if (hoverId !== this.lastHover) {
-      this.lastHover = hoverId;
+    const target =
+      s.bulldozeHover?.kind === 'building'
+        ? { mode: 'b' as const, id: s.bulldozeHover.id }
+        : s.hoverInfo?.kind === 'building'
+          ? { mode: 'i' as const, id: s.hoverInfo.id }
+          : null;
+    const hoverKey = target ? `${target.mode}:${target.id}` : null;
+    if (hoverKey !== this.lastHover) {
+      this.lastHover = hoverKey;
       this.drawHover();
     }
 
@@ -193,12 +200,17 @@ export class BuildingsLayer {
   }
 
   private drawHover(): void {
-    const { buildings, bulldozeHover } = useWorldStore.getState();
+    const s = useWorldStore.getState();
     this.hover.clear();
-    if (bulldozeHover?.kind !== 'building') return;
-    const b = buildings.find((x) => x.id === bulldozeHover.id);
+    const bulldoze = s.bulldozeHover?.kind === 'building' ? s.bulldozeHover : null;
+    const inspect = !bulldoze && s.hoverInfo?.kind === 'building' ? s.hoverInfo : null;
+    const target = bulldoze ?? inspect;
+    if (!target) return;
+    const b = s.buildings.find((x) => x.id === target.id);
     if (!b) return;
-    this.hover.poly(b.poly).fill({ color: BULLDOZE, alpha: 0.5 });
+    const color = bulldoze ? BULLDOZE : INSPECT;
+    const alpha = bulldoze ? 0.5 : 0.35;
+    this.hover.poly(b.poly).fill({ color, alpha });
   }
 
   private drawPreview(): void {

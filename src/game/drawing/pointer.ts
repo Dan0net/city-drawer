@@ -23,6 +23,9 @@ interface PointerState {
   bulldozePreview: BuildingId[];
   drawingCrossings: { x: number; y: number }[];
   drawingMidpoints: { x: number; y: number }[];
+  // Tooltip-only hover (tool === 'none'). Same shape as bulldozeHover but
+  // doesn't trigger any preview rendering.
+  hoverInfo: BulldozeHover | null;
 }
 
 const empty = (
@@ -30,6 +33,7 @@ const empty = (
   snap: SnapResult | null,
   bulldozeHover: BulldozeHover | null,
   bulldozePreview: BuildingId[] = [],
+  hoverInfo: BulldozeHover | null = null,
 ): PointerState => ({
   pointerWorld,
   snap,
@@ -37,6 +41,7 @@ const empty = (
   bulldozePreview,
   drawingCrossings: [],
   drawingMidpoints: [],
+  hoverInfo,
 });
 
 // Pure: derives the pointer/snap/preview/hover state from world inputs. The
@@ -90,7 +95,18 @@ export function computePointerState(
       bulldozePreview,
       drawingCrossings: crossings.map((c) => ({ x: c.x, y: c.y })),
       drawingMidpoints,
+      hoverInfo: null,
     };
+  }
+
+  if (tool === 'none') {
+    const b = buildingAtPoint(buildings, x, y);
+    if (b) return empty(pointerWorld, null, null, [], { kind: 'building', id: b.id });
+    const node = graph.nearestNode(x, y, radius);
+    if (node) return empty(pointerWorld, null, null, [], { kind: 'node', id: node.id });
+    const edge = graph.nearestEdge(x, y, radius);
+    if (edge) return empty(pointerWorld, null, null, [], { kind: 'edge', id: edge.edge.id });
+    return empty(pointerWorld, null, null);
   }
 
   if (tool === 'bulldoze') {

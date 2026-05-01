@@ -38,6 +38,8 @@ interface WorldState {
   drawingCrossings: { x: number; y: number }[];
   // Auto-subdivision points along the in-progress road at ~100m spacing.
   drawingMidpoints: { x: number; y: number }[];
+  // Tooltip-only hover (tool === 'none').
+  hoverInfo: BulldozeHover | null;
   simTime: number;
   paused: boolean;
   demandMaps: DemandMap[];
@@ -63,6 +65,7 @@ const idleDrawingState = {
   bulldozePreview: [] as BuildingId[],
   drawingCrossings: [] as { x: number; y: number }[],
   drawingMidpoints: [] as { x: number; y: number }[],
+  hoverInfo: null as BulldozeHover | null,
 };
 
 export const useWorldStore = create<WorldState>((set, get) => {
@@ -89,6 +92,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
     bulldozePreview: [],
     drawingCrossings: [],
     drawingMidpoints: [],
+    hoverInfo: null,
     simTime: 0,
     paused: false,
     demandMaps,

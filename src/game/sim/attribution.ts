@@ -73,23 +73,31 @@ export function findSources(
   return out;
 }
 
-// Mutate sink + sources to record the attribution. Caller has already decided
-// to commit (sources non-empty for building-sourced; cells just no-op).
+// Per-sink slot consumption: floor(area-share / unitArea) × consumption
+// multiplier, clamped to ≥ 1 so even tiny post-shrink sinks consume 1 slot.
+// nSources = 1 for cell-sourced demand (no per-source split).
+export const perSinkConsumption = (sink: Building, def: DemandDef, nSources: number): number => {
+  const unit = def.unitArea ?? 1;
+  const mult = def.sink.consumption ?? 1;
+  const share = sink.area / Math.max(1, nSources);
+  return Math.max(1, Math.floor(share / unit)) * mult;
+};
+
 export function commitAttribution(sink: Building, def: DemandDef, sources: Building[]): void {
   if (def.source.kind !== 'building' || sources.length === 0) return;
   sink.attributedToIds = sources.map((s) => s.id);
-  for (const s of sources) bumpFilled(s, def.id, +1);
+  const delta = perSinkConsumption(sink, def, sources.length);
+  for (const s of sources) bumpFilled(s, def.id, +delta);
 }
 
-// Reverse of commitAttribution. Looks up the demand the sink is for via its
-// type, then decrements each attributed source's filled count.
 export function undoAttribution(sink: Building, buildings: Building[]): void {
   if (!sink.attributedToIds || sink.attributedToIds.length === 0) return;
   const def = demandSunkBy(sink.type);
   if (!def || def.source.kind !== 'building') return;
+  const delta = perSinkConsumption(sink, def, sink.attributedToIds.length);
   for (const id of sink.attributedToIds) {
     const target = buildings.find((b) => b.id === id);
     if (!target) continue;
-    bumpFilled(target, def.id, -1);
+    bumpFilled(target, def.id, -delta);
   }
 }

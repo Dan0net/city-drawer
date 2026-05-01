@@ -3,6 +3,7 @@ import type { Building } from '@game/buildings';
 import type { DemandDef } from '@game/demand/types';
 import { DEMAND_TYPES } from '@game/demand/types';
 import type { DemandMap } from '@game/demand/maps';
+import { perSinkConsumption } from './attribution';
 import { EXP_DEMAND, EXP_LOCATION } from './config';
 
 // Weighted roulette over arbitrary items. Returns null when total weight ≤ 0.
@@ -34,11 +35,11 @@ interface AvailStat {
 //
 // Building-sourced: cap = nSources × source.capacity; filled = Σ filled[id]
 //   across sources; avail = cap − filled.
-// Cell-sourced: cap = Σ roadField across all graph nodes (the network's reach
-//   into the resource layer); filled = nSinks × (consumption ?? 1);
-//   avail = cap − filled. Avail can go negative if roads were bulldozed below
-//   the level needed to sustain already-built sinks; not clamped — caller
-//   decides display.
+// Cell-sourced: cap = map.reachableSum (Σ cell-value × cellArea, each cell
+//   counted at most once across all node discs — see reachableCellSum in
+//   demand/compute.ts); filled = nSinks × (consumption ?? 1); avail can go
+//   negative if roads were bulldozed below the level needed to sustain
+//   already-built sinks; not clamped — caller decides display.
 export function globalAvail(
   def: DemandDef,
   buildings: Building[],
@@ -57,11 +58,12 @@ export function globalAvail(
     return { cap, filled, avail: cap - filled };
   }
   const map = demandMaps.find((m) => m.id === def.id);
-  let cap = 0;
-  if (map) for (const v of map.roadField.values()) cap += v;
-  let nSinks = 0;
-  for (const b of buildings) if (b.type === def.sink.type) nSinks++;
-  const filled = nSinks * (def.consumption ?? 1);
+  const unit = def.unitArea ?? 1;
+  const cap = Math.floor((map?.reachableSum ?? 0) / unit);
+  let filled = 0;
+  for (const b of buildings) {
+    if (b.type === def.sink.type) filled += perSinkConsumption(b, def, 1);
+  }
   return { cap, filled, avail: cap - filled };
 }
 

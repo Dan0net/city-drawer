@@ -16,6 +16,8 @@ type DemandSource =
 interface DemandSink {
   type: BuildingType;
   count: number;
+  // Multiplier on per-sink consumption. Default 1.
+  consumption?: number;
 }
 
 export interface DemandDef {
@@ -23,12 +25,11 @@ export interface DemandDef {
   label: string;
   source: DemandSource;
   sink: DemandSink;
-  // BFS decay per hop for building-sourced maps; ignored for cell-sourced.
   decay: number;
-  // Cell-sourced only: how much of `cap` (= Σ roadField) one sink consumes.
-  // Default 1 → cap is denominated in factory-equivalents. Ignored for
-  // building-sourced (filled is computed from source.filled[id]).
-  consumption?: number;
+  // Building-sourced only: divisor that converts a sink's per-source area
+  // share into integer slot consumption. Set so a default-sized sink
+  // consumes exactly 1 slot per attributed source.
+  unitArea?: number;
   palette: Palette;
 }
 
@@ -59,17 +60,18 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     id: 'resource',
     label: 'resource',
     source: { kind: 'cells' },
-    sink: { type: 'factory', count: 0 },
+    sink: { type: 'factory', count: 0, consumption: 3 },
     decay: 0,
-    consumption: 1,
+    unitArea: 2500,
     palette: resourcePalette,
   },
   {
     id: 'jobs',
     label: 'jobs',
-    source: { kind: 'building', type: 'factory', capacity: 8 },
+    source: { kind: 'building', type: 'factory', capacity: 16 },
     sink: { type: 'small_house', count: 1 },
     decay: 0.7,
+    unitArea: 280,
     palette: ramp(40, 60, 110, 110, 140, 80, /* sat = one full factory */ 8),
   },
   {
@@ -78,14 +80,16 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     source: { kind: 'building', type: 'small_house', capacity: 1 },
     sink: { type: 'shop', count: 10 },
     decay: SERVICE_DECAY,
+    unitArea: 80,
     palette: ramp(60, 60, 60, 80, 140, 100, 10),
   },
   {
     id: 'leisure',
     label: 'leisure',
     source: { kind: 'building', type: 'small_house', capacity: 1 },
-    sink: { type: 'park', count: 20 },
+    sink: { type: 'park', count: 30 },
     decay: SERVICE_DECAY,
+    unitArea: 30,
     palette: ramp(60, 70, 120, 80, 70, 60, 20),
   },
 ];

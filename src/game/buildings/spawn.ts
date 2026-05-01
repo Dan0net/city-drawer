@@ -339,6 +339,7 @@ export function placeBuildingOnFrontage(
           poly: built.poly,
           centroid: built.centroid,
           aabb: built.aabb,
+          area: built.area,
           spawnedAt: simTime,
           consumed,
         },

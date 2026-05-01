@@ -8,6 +8,7 @@ const ROAD_COLOR = 0x2c3038;
 const SMALL_ROAD_COLOR = 0x3a4250;
 const PATH_COLOR = 0x9a8a72;
 const BULLDOZE_COLOR = 0xe55050;
+const INSPECT_COLOR = 0xf5c542;
 
 // Draws all edges in the graph. Rebuilds only when graph.version changes.
 export class EdgesLayer {
@@ -30,7 +31,10 @@ export class EdgesLayer {
       this.lastGraphVersion = s.graphVersion;
       this.rebuild();
     }
-    const hoverKey = s.bulldozeHover ? `${s.bulldozeHover.kind}:${s.bulldozeHover.id}` : null;
+    const target = s.bulldozeHover ?? s.hoverInfo;
+    const hoverKey = target
+      ? `${s.bulldozeHover ? 'b' : 'i'}:${target.kind}:${target.id}`
+      : null;
     if (hoverKey !== this.lastHover) {
       this.lastHover = hoverKey;
       this.drawHover();
@@ -86,22 +90,27 @@ export class EdgesLayer {
   }
 
   private drawHover(): void {
-    const { graph, bulldozeHover } = useWorldStore.getState();
+    const s = useWorldStore.getState();
+    const target = s.bulldozeHover ?? s.hoverInfo;
     this.hover.clear();
-    if (!bulldozeHover) return;
-    if (bulldozeHover.kind === 'edge') {
-      const e = graph.edges.get(bulldozeHover.id);
+    if (!target || target.kind === 'building') return;
+    const color = s.bulldozeHover ? BULLDOZE_COLOR : INSPECT_COLOR;
+    const { graph } = s;
+    if (target.kind === 'edge') {
+      const e = graph.edges.get(target.id);
       if (!e) return;
       const a = graph.nodes.get(e.from)!;
       const b = graph.nodes.get(e.to)!;
       const baseW =
         e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
       this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      this.hover.stroke({ width: baseW + 3, color: BULLDOZE_COLOR, alpha: 0.55, cap: 'round' });
-    } else {
-      const n = graph.nodes.get(bulldozeHover.id);
-      if (!n) return;
-      // Removing the node also removes every incident edge — highlight them all.
+      this.hover.stroke({ width: baseW + 3, color, alpha: 0.55, cap: 'round' });
+      return;
+    }
+    // node: highlight the node, and for bulldoze also pre-stage incident edges.
+    const n = graph.nodes.get(target.id);
+    if (!n) return;
+    if (s.bulldozeHover) {
       for (const eid of n.edges) {
         const e = graph.edges.get(eid);
         if (!e) continue;
@@ -110,9 +119,9 @@ export class EdgesLayer {
         const baseW =
           e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
         this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
-        this.hover.stroke({ width: baseW + 3, color: BULLDOZE_COLOR, alpha: 0.55, cap: 'round' });
+        this.hover.stroke({ width: baseW + 3, color, alpha: 0.55, cap: 'round' });
       }
-      this.hover.circle(n.x, n.y, ROAD_WIDTH).fill({ color: BULLDOZE_COLOR, alpha: 0.6 });
     }
+    this.hover.circle(n.x, n.y, ROAD_WIDTH).fill({ color, alpha: 0.6 });
   }
 }

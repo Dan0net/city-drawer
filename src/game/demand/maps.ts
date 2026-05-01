@@ -10,7 +10,12 @@ import {
 } from '@game/sim/config';
 import { createCellMap, type CellMap } from './cellMap';
 import { createRoadField, type RoadField } from './roadField';
-import { bfsDecay, sampleCellsToRoadField, splatRoadFieldToCells } from './compute';
+import {
+  bfsDecay,
+  reachableCellSum,
+  sampleCellsToRoadField,
+  splatRoadFieldToCells,
+} from './compute';
 import { seedResourceBlobs } from './seed';
 import { DEMAND_TYPES, type DemandDef, type Palette } from './types';
 
@@ -25,6 +30,10 @@ export interface DemandMap {
   readonly palette: Palette;
   readonly cellMap: CellMap;
   readonly roadField: RoadField;
+  // Cell-sourced only: total resource the road network can reach (in
+  // resource-value × m² units), recomputed alongside roadField. 0 for
+  // building-sourced maps. Read by globalAvail() to derive cap.
+  reachableSum: number;
   recompute(ctx: RecomputeCtx): void;
 }
 
@@ -36,14 +45,19 @@ function createDemandMap(def: DemandDef, seed: number): DemandMap {
 
   if (def.source.kind === 'cells') {
     seedResourceBlobs(cellMap, seed);
-    return {
+    const map: DemandMap = {
       id: def.id,
       label: def.label,
       palette: def.palette,
       cellMap,
       roadField,
-      recompute: (ctx) => sampleCellsToRoadField(cellMap, ctx.graph, roadField, CELL_SAMPLE_RADIUS),
+      reachableSum: 0,
+      recompute: (ctx) => {
+        sampleCellsToRoadField(cellMap, ctx.graph, roadField, CELL_SAMPLE_RADIUS);
+        map.reachableSum = reachableCellSum(cellMap, ctx.graph, CELL_SAMPLE_RADIUS);
+      },
     };
+    return map;
   }
 
   // Building-sourced: each source broadcasts (capacity − filled[id]) along the
@@ -56,6 +70,7 @@ function createDemandMap(def: DemandDef, seed: number): DemandMap {
     palette: def.palette,
     cellMap,
     roadField,
+    reachableSum: 0,
     recompute: (ctx) => {
       roadField.clear();
       for (const b of ctx.buildings) {

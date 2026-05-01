@@ -84,7 +84,11 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
           canvas.style.cursor = 'grabbing';
           return;
         }
-        const tool = useWorldStore.getState().tool;
+        const { tool, hoverInfo } = useWorldStore.getState();
+        if (tool === 'none' && hoverInfo) {
+          canvas.style.cursor = 'pointer';
+          return;
+        }
         if (tool === 'none' || pointer.spaceDown) {
           canvas.style.cursor = 'grab';
           return;
@@ -147,6 +151,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         useWorldStore.getState().setPointer(w.x, w.y, SNAP_PX / zoom, {
           snapDraw: useUiStore.getState().snapDraw,
         });
+        updateCursor();
       };
 
       const onPointerUp = (e: PointerEvent) => {

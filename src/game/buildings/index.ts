@@ -13,6 +13,7 @@ export interface Building {
   poly: number[];
   centroid: Vec2;
   aabb: AABB;
+  area: number;
   // Sim seconds at spawn. Drives the construction animation in BuildingsLayer.
   spawnedAt: number;
   // Frontage ranges this building occupies (front + any back/side faces along
