@@ -25,4 +25,4 @@ Path aliases: `@game/*`, `@render/*`, `@ui/*`, `@lib/*`, `@app/*`.
 
 ## Workflow
 
-- Typecheck: `npx tsc --noEmit`. Don't run the dev server.
+- Typecheck: `npx tsc -b --noEmit`. The unflagged `npx tsc --noEmit` only resolves project references and silently skips actual files. Don't run the dev server.

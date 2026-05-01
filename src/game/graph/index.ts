@@ -43,6 +43,24 @@ export type Anchor =
   | { kind: 'node'; nodeId: NodeId }
   | { kind: 'split'; edgeId: EdgeId; t: number };
 
+// Records the lineage of an edge that was split: each child's id and the
+// parent t-range it now covers. Consumers (e.g. ledger paths, building
+// `consumed` ranges) use this to remap onto the new ids.
+export interface SplitChild {
+  id: EdgeId;
+  parentT0: number;
+  parentT1: number;
+}
+
+// What changed in the edge set since the last `consumeDelta()`. Splits and
+// outright deletes are the only things that invalidate edge ids elsewhere.
+export interface GraphDelta {
+  deletedEdges: EdgeId[];
+  splits: Map<EdgeId, SplitChild[]>;
+}
+
+const emptyDelta = (): GraphDelta => ({ deletedEdges: [], splits: new Map() });
+
 const CELL = 16;
 const cellKey = (cx: number, cy: number): string => `${cx},${cy}`;
 
@@ -58,6 +76,9 @@ export class Graph {
   private edgeCells = new Map<EdgeId, string[]>();
   private edgeGrid = new Map<string, Set<EdgeId>>();
   private nodeGrid = new Map<string, Set<NodeId>>();
+  // Per-batch record of deletes/splits since last consumeDelta(). Mutations
+  // append; callers drain via consumeDelta() and reconcile downstream state.
+  private pendingDelta: GraphDelta = emptyDelta();
 
   insertEdge(
     a: Anchor,
@@ -140,6 +161,7 @@ export class Graph {
       this.unindexNode(to);
       this.nodes.delete(to.id);
     }
+    this.pendingDelta.deletedEdges.push(id);
     this.version++;
     return true;
   }
@@ -165,7 +187,18 @@ export class Graph {
     this.edgeCells.clear();
     this.edgeGrid.clear();
     this.nodeGrid.clear();
+    this.pendingDelta = emptyDelta();
     this.version++;
+  }
+
+  // Drain and return everything that has happened to the edge set since the
+  // last call. Callers must invoke this after any batch of mutations and
+  // hand the result to `reconcileGraphDelta` so ledger paths, traffic, and
+  // `Building.consumed` all stay coherent.
+  consumeDelta(): GraphDelta {
+    const out = this.pendingDelta;
+    this.pendingDelta = emptyDelta();
+    return out;
   }
 
   // Nearest node within a world-radius. Returns null if none.
@@ -298,6 +331,11 @@ export class Graph {
     to.edges.add(e2Id);
     this.indexEdge(e1);
     this.indexEdge(e2);
+
+    this.pendingDelta.splits.set(edgeId, [
+      { id: e1Id, parentT0: 0, parentT1: ts },
+      { id: e2Id, parentT0: ts, parentT1: 1 },
+    ]);
 
     return newId;
   }

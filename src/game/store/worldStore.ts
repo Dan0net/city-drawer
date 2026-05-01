@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Graph } from '@game/graph';
-import type { EdgeId, EdgeKind } from '@game/graph';
+import type { EdgeKind } from '@game/graph';
 import type { Building, BuildingId, FailedAttempt } from '@game/buildings';
 import { removeBuildingRestoring } from '@game/buildings/bulldoze';
 import {
@@ -17,13 +17,15 @@ import { createDemandMaps, type DemandMap } from '@game/demand/maps';
 import {
   createAttributionLedgers,
   createTraffic,
-  dropLinksThroughEdges,
   resetLedger,
   resetTraffic,
-  settleAfterDrop,
   type AttributionLedgers,
   type TrafficState,
 } from '@game/sim/attribution';
+import {
+  reconcileGraphAdditions,
+  reconcileGraphDelta,
+} from '@game/sim/graphReconcile';
 import { createSpawnEngine } from '@game/sim/spawn';
 import { useDebugStore } from '@game/store/debugStore';
 
@@ -136,7 +138,11 @@ export const useWorldStore = create<WorldState>((set, get) => {
       set({ pointerWorld: null, snap: null, ...idleDrawingState, drawingStart: get().drawingStart }),
 
     beginOrCommitDraw: (kind) => {
-      const { drawingStart, snap, graph: g, buildings: bs } = get();
+      const {
+        drawingStart, snap,
+        graph: g, buildings: bs,
+        attributions: ledgers, traffic: t,
+      } = get();
       if (!snap) return;
       const result: DrawCommitResult = commitDraw(g, bs, drawingStart, snap, kind);
       if (result.kind === 'begin') {
@@ -147,22 +153,31 @@ export const useWorldStore = create<WorldState>((set, get) => {
         set({ drawingStart: null, bulldozePreview: [], drawingCrossings: [], drawingMidpoints: [] });
         return;
       }
+      let buildingsTouched = false;
+      for (const id of result.bulldozeIds) {
+        removeBuildingRestoring(g, bs, ledgers, t, id, null);
+        buildingsTouched = true;
+      }
+      const reconcile = reconcileGraphDelta(g.consumeDelta(), g, bs, ledgers, t);
+      if (reconcile.buildingsTouched) buildingsTouched = true;
+      reconcileGraphAdditions(g, bs, ledgers, t);
       const patch: Partial<WorldState> = {
         graphVersion: g.version,
         drawingStart: result.drawingStart,
         bulldozePreview: [],
         drawingCrossings: [],
         drawingMidpoints: [],
+        attributionsVersion: get().attributionsVersion + 1,
+        trafficVersion: get().trafficVersion + 1,
       };
-      if (result.buildingsChanged) patch.buildingsVersion = get().buildingsVersion + 1;
+      if (buildingsTouched) patch.buildingsVersion = get().buildingsVersion + 1;
       set(patch);
     },
 
     cancelDraw: () => set({ ...idleDrawingState }),
 
     removeAtPointer: () => {
-      const s0 = get();
-      const { graph: g, bulldozeHover, buildings: bs, attributions: ledgers, traffic: t } = s0;
+      const { graph: g, bulldozeHover, buildings: bs, attributions: ledgers, traffic: t } = get();
       if (!bulldozeHover) return;
       if (bulldozeHover.kind === 'building') {
         const bumpGraph = removeBuildingRestoring(g, bs, ledgers, t, bulldozeHover.id, null);
@@ -175,35 +190,16 @@ export const useWorldStore = create<WorldState>((set, get) => {
         });
         return;
       }
-      // Edge or node removal. Order: delete from graph first so all
-      // subsequent BFSes (re-attribution) route around the dead edges; then
-      // drop ledger links sitting on those edges and re-fill counterparties.
-      const affected = new Set<EdgeId>();
-      if (bulldozeHover.kind === 'edge') {
-        affected.add(bulldozeHover.id);
-      } else {
-        const node = g.nodes.get(bulldozeHover.id);
-        if (node) for (const eid of node.edges) affected.add(eid);
-      }
       if (bulldozeHover.kind === 'edge') g.removeEdge(bulldozeHover.id);
       else g.removeNode(bulldozeHover.id);
-      let bumpBuildings = false;
-      for (let i = bs.length - 1; i >= 0; i--) {
-        const primaryEdge = bs[i].consumed[0]?.edgeId;
-        if (primaryEdge != null && affected.has(primaryEdge)) {
-          removeBuildingRestoring(g, bs, ledgers, t, bs[i].id, affected);
-          bumpBuildings = true;
-        }
-      }
-      const dropped = dropLinksThroughEdges(ledgers, affected, t);
-      settleAfterDrop(dropped, { graph: g, buildings: bs, ledgers, traffic: t });
+      const reconcile = reconcileGraphDelta(g.consumeDelta(), g, bs, ledgers, t);
       const patch: Partial<WorldState> = {
         graphVersion: g.version,
         attributionsVersion: get().attributionsVersion + 1,
         trafficVersion: get().trafficVersion + 1,
         bulldozeHover: null,
       };
-      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+      if (reconcile.buildingsTouched) patch.buildingsVersion = get().buildingsVersion + 1;
       set(patch);
     },
 
