@@ -1,9 +1,10 @@
 import { Container, Graphics } from 'pixi.js';
-import type { Graph } from '@game/graph';
+import type { EdgeId, Graph } from '@game/graph';
 import type { Building, BuildingId } from '@game/buildings';
-import type { AttributionLedger, AttributionLedgers, Link } from '@game/sim/attribution';
+import type { AttributionLedgers, Link } from '@game/sim/attribution';
 import { DEMAND_TYPES, type DemandDef, type DemandId } from '@game/demand/types';
 import { ATTRIBUTION_NEAREST_RADIUS } from '@game/sim/config';
+import type { BulldozeHover } from '@game/drawing/pointer';
 import { useWorldStore } from '@game/store/worldStore';
 
 const STROKE_WIDTH = 1.6;
@@ -43,11 +44,16 @@ export interface RoutesResult {
   dots: RouteDot[];
 }
 
-// Highlights ledger links touching the hovered building. Polylines come
-// straight from each Link's stored `edges` — the same path the attribution
-// fill helpers walked, so hover viz matches actual flow exactly. Pixi draws
-// stroke + arrowhead + start-dot; slot labels render in the DOM via
-// HoverRouteLabels for crisp text. `def.flipArrow` reverses direction.
+interface SelectedLink {
+  link: Link;
+  def: DemandDef;
+}
+
+// Highlights ledger links touching whatever the user is hovering. Building
+// → links where the building is source or sink. Edge → links whose stored
+// path contains that edge (via edgeIndex). Node → union over the node's
+// incident edges. Polylines come straight from each Link's stored `edges`,
+// so hover viz matches actual flow.
 export class HoverRoutesLayer {
   readonly container = new Container();
   private g = new Graphics();
@@ -61,24 +67,88 @@ export class HoverRoutesLayer {
   update(): void {
     const s = useWorldStore.getState();
     const hover = s.hoverInfo;
-    const target = hover?.kind === 'building' ? hover.id : null;
-    const key = target == null
-      ? ''
-      : `${target}:${s.attributionsVersion}:${s.graphVersion}:${s.buildingsVersion}`;
+    const key = hover
+      ? `${hover.kind}:${hover.id}:${s.attributionsVersion}:${s.graphVersion}:${s.buildingsVersion}`
+      : '';
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.g.clear();
-    if (target == null) {
+    if (!hover) {
       this.container.visible = false;
       return;
     }
     this.container.visible = true;
-    const tgt = s.buildings.find((b) => b.id === target);
-    if (!tgt) return;
-    const result = computeRoutes(tgt, s.graph, s.buildings, s.attributions);
+    const selected = selectLinksForHover(hover, s.buildings, s.attributions, s.graph);
+    const result = computeRoutes(selected, s.graph, s.buildings);
     for (const stroke of result.strokes) drawStroke(this.g, stroke);
     for (const dot of result.dots) drawDot(this.g, dot);
   }
+}
+
+export function selectLinksForHover(
+  hover: BulldozeHover,
+  buildings: Building[],
+  ledgers: AttributionLedgers,
+  graph: Graph,
+): SelectedLink[] {
+  if (hover.kind === 'building') {
+    const target = buildings.find((b) => b.id === hover.id);
+    return target ? selectLinksForBuilding(target, ledgers) : [];
+  }
+  if (hover.kind === 'edge') {
+    const set = new Set<EdgeId>([hover.id]);
+    return selectLinksForEdges(set, ledgers);
+  }
+  // node
+  const node = graph.nodes.get(hover.id);
+  if (!node) return [];
+  return selectLinksForEdges(node.edges, ledgers);
+}
+
+function selectLinksForBuilding(target: Building, ledgers: AttributionLedgers): SelectedLink[] {
+  const out: SelectedLink[] = [];
+  const seen = new Set<Link>();
+  for (const def of DEMAND_TYPES) {
+    if (def.source.kind !== 'building') continue;
+    const ledger = ledgers.get(def.id);
+    if (!ledger) continue;
+    if (def.sink.type === target.type) {
+      const map = ledger.bySink.get(target.id);
+      if (map) for (const link of map.values()) {
+        if (!seen.has(link)) { seen.add(link); out.push({ link, def }); }
+      }
+    }
+    if (def.source.type === target.type) {
+      const map = ledger.bySource.get(target.id);
+      if (map) for (const link of map.values()) {
+        if (!seen.has(link)) { seen.add(link); out.push({ link, def }); }
+      }
+    }
+  }
+  return out;
+}
+
+function selectLinksForEdges(
+  edgeIds: ReadonlySet<EdgeId>,
+  ledgers: AttributionLedgers,
+): SelectedLink[] {
+  const out: SelectedLink[] = [];
+  const seen = new Set<Link>();
+  for (const def of DEMAND_TYPES) {
+    if (def.source.kind !== 'building') continue;
+    const ledger = ledgers.get(def.id);
+    if (!ledger) continue;
+    for (const eid of edgeIds) {
+      const set = ledger.edgeIndex.get(eid);
+      if (!set) continue;
+      for (const link of set) {
+        if (seen.has(link)) continue;
+        seen.add(link);
+        out.push({ link, def });
+      }
+    }
+  }
+  return out;
 }
 
 interface LabelAcc {
@@ -91,10 +161,9 @@ interface LabelAcc {
 }
 
 export function computeRoutes(
-  target: Building,
+  selected: ReadonlyArray<SelectedLink>,
   graph: Graph,
   buildings: Building[],
-  ledgers: AttributionLedgers,
 ): RoutesResult {
   const strokes: RouteStroke[] = [];
   const labelMap = new Map<string, LabelAcc>();
@@ -122,57 +191,9 @@ export function computeRoutes(
     labelMap.set(k, { wx, wy, color, slots, sumDirX: dirX, sumDirY: dirY });
   };
 
-  for (const def of DEMAND_TYPES) {
-    if (def.source.kind !== 'building') continue;
-    const ledger = ledgers.get(def.id);
-    if (!ledger) continue;
-    const color = paletteColor(def);
-    if (def.sink.type === target.type) {
-      collectLinks(target, ledger, def, graph, buildings, color, 'sink', strokes, addLabel, dotMap);
-    }
-    if (def.source.type === target.type) {
-      collectLinks(target, ledger, def, graph, buildings, color, 'source', strokes, addLabel, dotMap);
-    }
-  }
-
-  const labels: RouteLabel[] = [];
-  for (const acc of labelMap.values()) {
-    const len = Math.hypot(acc.sumDirX, acc.sumDirY) || 1;
-    labels.push({
-      wx: acc.wx,
-      wy: acc.wy,
-      slots: acc.slots,
-      color: acc.color,
-      dirX: acc.sumDirX / len,
-      dirY: acc.sumDirY / len,
-    });
-  }
-  return { strokes, labels, dots: [...dotMap.values()] };
-}
-
-function collectLinks(
-  target: Building,
-  ledger: AttributionLedger,
-  def: DemandDef,
-  graph: Graph,
-  buildings: Building[],
-  color: number,
-  role: 'sink' | 'source',
-  strokes: RouteStroke[],
-  addLabel: (
-    bId: BuildingId, demandId: DemandId, side: 's' | 'e',
-    wx: number, wy: number, dirX: number, dirY: number,
-    color: number, slots: number,
-  ) => void,
-  dotMap: Map<string, RouteDot>,
-): void {
-  const links = role === 'sink' ? ledger.bySink.get(target.id) : ledger.bySource.get(target.id);
-  if (!links || links.size === 0) return;
-  for (const link of links.values()) {
-    const dataSourceId = link.sourceId;
-    const dataSinkId = link.sinkId;
-    const dataSource = buildings.find((b) => b.id === dataSourceId);
-    const dataSink = buildings.find((b) => b.id === dataSinkId);
+  for (const { link, def } of selected) {
+    const dataSource = buildings.find((b) => b.id === link.sourceId);
+    const dataSink = buildings.find((b) => b.id === link.sinkId);
     if (!dataSource || !dataSink) continue;
     let pts = polylineFromLink(graph, dataSource, dataSink, link);
     if (!pts || pts.length < 4) continue;
@@ -180,6 +201,7 @@ function collectLinks(
 
     const visualSource = def.flipArrow ? dataSink : dataSource;
     const visualSink = def.flipArrow ? dataSource : dataSink;
+    const color = paletteColor(def);
     const n = pts.length;
     const tipDx = pts[n - 2] - pts[n - 4];
     const tipDy = pts[n - 1] - pts[n - 3];
@@ -201,14 +223,23 @@ function collectLinks(
       dotMap.set(dotKey, { wx: visualSource.centroid.x, wy: visualSource.centroid.y, color });
     }
   }
+
+  const labels: RouteLabel[] = [];
+  for (const acc of labelMap.values()) {
+    const len = Math.hypot(acc.sumDirX, acc.sumDirY) || 1;
+    labels.push({
+      wx: acc.wx,
+      wy: acc.wy,
+      slots: acc.slots,
+      color: acc.color,
+      dirX: acc.sumDirX / len,
+      dirY: acc.sumDirY / len,
+    });
+  }
+  return { strokes, labels, dots: [...dotMap.values()] };
 }
 
-interface FrontEdge {
-  pt: { x: number; y: number };
-}
-
-// Centerline midpoint of the building's primary frontage interval.
-function frontEdge(graph: Graph, b: Building): FrontEdge | null {
+function frontPoint(graph: Graph, b: Building): { x: number; y: number } | null {
   const c = b.consumed[0];
   if (!c) return null;
   const e = graph.edges.get(c.edgeId);
@@ -217,7 +248,7 @@ function frontEdge(graph: Graph, b: Building): FrontEdge | null {
   const z = graph.nodes.get(e.to);
   if (!a || !z) return null;
   const t = (c.t0 + c.t1) * 0.5;
-  return { pt: { x: a.x + (z.x - a.x) * t, y: a.y + (z.y - a.y) * t } };
+  return { x: a.x + (z.x - a.x) * t, y: a.y + (z.y - a.y) * t };
 }
 
 // Reconstruct polyline data-direction (source.centroid → sink.centroid)
@@ -229,24 +260,24 @@ function polylineFromLink(
   sink: Building,
   link: Link,
 ): number[] | null {
-  const sf = frontEdge(graph, source);
-  const tf = frontEdge(graph, sink);
+  const sf = frontPoint(graph, source);
+  const tf = frontPoint(graph, sink);
   if (!sf || !tf) return null;
   const startNode = graph.nearestNode(source.centroid.x, source.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
   if (!startNode) return null;
 
-  const pts: number[] = [source.centroid.x, source.centroid.y, sf.pt.x, sf.pt.y];
+  const pts: number[] = [source.centroid.x, source.centroid.y, sf.x, sf.y];
   let cur = startNode.id;
   pts.push(startNode.x, startNode.y);
   for (const eid of link.edges) {
     const e = graph.edges.get(eid);
-    if (!e) return null; // path crosses a deleted edge — skip viz
+    if (!e) return null;
     cur = e.from === cur ? e.to : e.from;
     const node = graph.nodes.get(cur);
     if (!node) return null;
     pts.push(node.x, node.y);
   }
-  pts.push(tf.pt.x, tf.pt.y, sink.centroid.x, sink.centroid.y);
+  pts.push(tf.x, tf.y, sink.centroid.x, sink.centroid.y);
   return pts;
 }
 

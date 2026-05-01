@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import { useWorldStore } from '@game/store/worldStore';
 import { useCameraStore } from '@game/store/cameraStore';
-import { computeRoutes } from '@render/layers/HoverRoutesLayer';
+import { computeRoutes, selectLinksForHover } from '@render/layers/HoverRoutesLayer';
 
 const BADGE: CSSProperties = {
   position: 'absolute',
@@ -33,12 +33,11 @@ export function HoverRouteLabels({ width, height }: { width: number; height: num
   const cy = useCameraStore((s) => s.cy);
   const zoom = useCameraStore((s) => s.zoom);
 
-  if (!hoverInfo || hoverInfo.kind !== 'building' || width === 0 || height === 0) return null;
+  if (!hoverInfo || width === 0 || height === 0) return null;
   const { graph, buildings, attributions } = useWorldStore.getState();
-  const target = buildings.find((b) => b.id === hoverInfo.id);
-  if (!target) return null;
-
-  const { labels } = computeRoutes(target, graph, buildings, attributions);
+  const selected = selectLinksForHover(hoverInfo, buildings, attributions, graph);
+  if (selected.length === 0) return null;
+  const { labels } = computeRoutes(selected, graph, buildings);
   return (
     <>
       {labels.map((l, i) => {
