@@ -1,6 +1,3 @@
-import type { AABB } from '@lib/aabb';
-import { pointInPoly } from '@lib/poly';
-
 // Uniform world-aligned scalar grid. The world spans
 // [originX, originX + cols*cellSize) × [originY, originY + rows*cellSize).
 export interface CellMap {
@@ -49,18 +46,3 @@ export function forEachCellInRadius(
   }
 }
 
-// Zero every cell whose center sits inside `poly`. Used so a placed factory
-// "consumes" the resource cells under its footprint.
-export function clearCellsUnderPoly(map: CellMap, poly: number[], aabb: AABB): void {
-  const i0 = Math.max(0, Math.floor((aabb.minX - map.originX) / map.cellSize));
-  const i1 = Math.min(map.cols - 1, Math.floor((aabb.maxX - map.originX) / map.cellSize));
-  const j0 = Math.max(0, Math.floor((aabb.minY - map.originY) / map.cellSize));
-  const j1 = Math.min(map.rows - 1, Math.floor((aabb.maxY - map.originY) / map.cellSize));
-  for (let j = j0; j <= j1; j++) {
-    for (let i = i0; i <= i1; i++) {
-      const cx = map.originX + (i + 0.5) * map.cellSize;
-      const cy = map.originY + (j + 0.5) * map.cellSize;
-      if (pointInPoly(poly, cx, cy)) map.data[j * map.cols + i] = 0;
-    }
-  }
-}

@@ -8,21 +8,31 @@ interface AttributionRecord {
   filledAfter: number;
 }
 
-export type SpawnEvent = {
-  id: number;
-  t: number; // sim seconds
-  ok: boolean;
-  demandId: string;
-  sinkType: BuildingType;
-} & (
+export type SpawnEvent = { id: number } & (
   | {
-      ok: true;
+      kind: 'success';
+      t: number;
+      demandId: string;
+      sinkType: BuildingType;
       sourceType: BuildingType | 'cells';
       sourceCapacity: number;
       attributions: AttributionRecord[];
       targetCount: number;
     }
-  | { ok: false; reason: string }
+  | {
+      kind: 'physical_failure';
+      t: number;
+      demandId: string;
+      sinkType: BuildingType;
+      reason: string;
+    }
+  | {
+      kind: 'no_route_for_demand';
+      t: number;
+      demandId: string;
+      sinkType: BuildingType;
+    }
+  | { kind: 'no_spawnable_demand'; t: number }
 );
 
 interface DebugState {

@@ -36,9 +36,23 @@ Phase PRDs in `docs/`.
 
 ## Demand model
 
-Every demand follows source/sink/decay. A SOURCE (cells, or a building type with `capacity`) broadcasts `(capacity − filled[id])` along the road graph with per-demand decay. A SINK (building type) spawns where the field is hot and fills `count` source slots near it; bulldozing the sink restores them. New demand or building type → add a row to `DEMAND_TYPES` / `BUILDING_TYPES`. No branches on building type in sim, store, or bulldoze.
+Two layers, kept separate:
 
-A building type sinks at most one demand; it can source any number. `Building.filled` is `Record<DemandId, number>`, keyed by demand id, owned by the demand layer.
+**Layer 1 — global truth.** For each demand, `cap`, `filled`, `avail` are exact sums computed from the actual building list (and cellMap for cell-sourced). `avail` drives the demand-roll; the demand tab shows all three. Computed by `globalAvail()` in `sim/picker.ts` — single source of truth.
+
+- Building-sourced (jobs/commercial/leisure): `cap = nSources × source.capacity`, `filled = Σ filled[id]` across sources.
+- Cell-sourced (resource): `cap = Σ roadField` across all graph nodes (the network's reach into the cell layer), `filled = nSinks × (def.consumption ?? 1)`. Cells are static after seed — never cleared. Avail can go negative if roads are bulldozed below the level needed to sustain already-built sinks; not clamped.
+
+**Layer 2 — graph projection.** Each demand has a per-node `roadField`. Building-sourced fields are BFS-decay broadcasts of `(capacity − filled[id])` from each source. Cell-sourced fields integrate nearby cells via a sample radius. This is the spawn-location bias — approximate by design (decay loses mass).
+
+**Two-stage spawn picker** (`sim/spawn.ts`):
+1. Roll a demand: `P(d) ∝ globalAvail(d) ^ EXP_DEMAND`.
+2. Roll an edge for that demand: `P(e) ∝ field(e, d) ^ EXP_LOCATION`. Uniform fallback when all fields are zero, so a sink can still spawn — global accounting stays accurate.
+3. After physical placement, attribute via graph BFS (`findSources`). If no graph route to a source with slack, exclude that demand for this tick and re-roll. If all demands exhausted, skip the tick.
+
+`EXP_DEMAND` and `EXP_LOCATION` live in `sim/config.ts`.
+
+A building type sinks at most one demand; it can source any number. `Building.filled` is `Record<DemandId, number>`, keyed by demand id, owned by the demand layer. New demand or building type → add a row to `DEMAND_TYPES` / `BUILDING_TYPES`. No branches on building type in sim, store, or bulldoze.
 
 ## Layering
 

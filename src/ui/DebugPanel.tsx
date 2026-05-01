@@ -1,18 +1,18 @@
 import { useState, type CSSProperties } from 'react';
 import { useDebugStore, type SpawnEvent } from '@game/store/debugStore';
 import { useWorldStore } from '@game/store/worldStore';
-import { DEMAND_TYPES, type DemandDef } from '@game/demand/types';
-import { previewPool } from '@game/sim/picker';
-import type { Building } from '@game/buildings';
+import { DEMAND_TYPES } from '@game/demand/types';
+import { globalAvail, previewField } from '@game/sim/picker';
+import { EXP_DEMAND, EXP_LOCATION } from '@game/sim/config';
 
-type Tab = 'events' | 'demand' | 'pool';
+type Tab = 'events' | 'demand' | 'field';
 
 const PANEL: CSSProperties = {
   position: 'absolute',
   bottom: 8,
   right: 8,
   zIndex: 10,
-  width: 360,
+  width: 380,
   background: 'rgba(11, 14, 19, 0.92)',
   border: '1px solid #1c2330',
   borderRadius: 6,
@@ -20,10 +20,7 @@ const PANEL: CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   color: '#aab4c2',
 };
-const HEADER: CSSProperties = {
-  display: 'flex',
-  borderBottom: '1px solid #1c2330',
-};
+const HEADER: CSSProperties = { display: 'flex', borderBottom: '1px solid #1c2330' };
 const TAB_BTN_BASE: CSSProperties = {
   flex: 1,
   padding: '6px 8px',
@@ -40,12 +37,7 @@ const TAB_BTN_ACTIVE: CSSProperties = {
   background: '#1a212d',
   borderBottom: '2px solid #4a90ff',
 };
-const BODY: CSSProperties = {
-  height: 240,
-  overflowY: 'auto',
-  padding: 8,
-  lineHeight: 1.5,
-};
+const BODY: CSSProperties = { height: 240, overflowY: 'auto', padding: 8, lineHeight: 1.5 };
 const ROW: CSSProperties = {
   display: 'flex',
   gap: 8,
@@ -67,7 +59,7 @@ export function DebugPanel() {
   return (
     <div style={PANEL}>
       <div style={HEADER}>
-        {(['events', 'demand', 'pool'] as Tab[]).map((t) => (
+        {(['events', 'demand', 'field'] as Tab[]).map((t) => (
           <button
             key={t}
             style={tab === t ? TAB_BTN_ACTIVE : TAB_BTN_BASE}
@@ -91,7 +83,7 @@ export function DebugPanel() {
         <div style={BODY}>
           {tab === 'events' && <EventsTab />}
           {tab === 'demand' && <DemandTab />}
-          {tab === 'pool' && <PoolTab />}
+          {tab === 'field' && <FieldTab />}
         </div>
       )}
     </div>
@@ -130,37 +122,58 @@ function EventsTab() {
   );
 }
 
+const TIME_COL: CSSProperties = { width: 44, color: '#566273' };
+const ICON_COL: CSSProperties = { width: 10 };
+
 function EventRow({ e }: { e: SpawnEvent }) {
   const t = `${e.t.toFixed(1)}s`;
-  if (e.ok) {
-    return (
-      <div style={{ ...ROW, color: '#86d99a' }}>
-        <span style={{ width: 44, color: '#566273' }}>{t}</span>
-        <span style={{ width: 10 }}>✓</span>
-        <span style={{ whiteSpace: 'normal' }}>
-          {e.sinkType} · {e.demandId} · <AttributionDetail e={e} />
-        </span>
-      </div>
-    );
+  switch (e.kind) {
+    case 'success':
+      return (
+        <div style={{ ...ROW, color: '#86d99a' }}>
+          <span style={TIME_COL}>{t}</span>
+          <span style={ICON_COL}>✓</span>
+          <span style={{ whiteSpace: 'normal' }}>
+            {e.sinkType} · {e.demandId} · <SuccessDetail e={e} />
+          </span>
+        </div>
+      );
+    case 'physical_failure':
+      return (
+        <div style={{ ...ROW, color: '#e57373' }}>
+          <span style={TIME_COL}>{t}</span>
+          <span style={ICON_COL}>✗</span>
+          <span>
+            {e.sinkType} · <span style={{ color: '#aab4c2' }}>{e.reason}</span>
+          </span>
+        </div>
+      );
+    case 'no_route_for_demand':
+      return (
+        <div style={{ ...ROW, color: '#e3c364' }}>
+          <span style={TIME_COL}>{t}</span>
+          <span style={ICON_COL}>⚠</span>
+          <span>
+            {e.sinkType} · {e.demandId} ·{' '}
+            <span style={{ color: '#aab4c2' }}>no graph route to source</span>
+          </span>
+        </div>
+      );
+    case 'no_spawnable_demand':
+      return (
+        <div style={{ ...ROW, color: '#566273' }}>
+          <span style={TIME_COL}>{t}</span>
+          <span style={ICON_COL}>—</span>
+          <span>no spawnable demand this tick</span>
+        </div>
+      );
   }
-  return (
-    <div style={{ ...ROW, color: '#e57373' }}>
-      <span style={{ width: 44, color: '#566273' }}>{t}</span>
-      <span style={{ width: 10 }}>✗</span>
-      <span>
-        {e.sinkType} · <span style={{ color: '#aab4c2' }}>{e.reason}</span>
-      </span>
-    </div>
-  );
 }
 
-function AttributionDetail({ e }: { e: SpawnEvent & { ok: true } }) {
-  // Cell-sourced (factory consumes resource cells under its footprint).
+function SuccessDetail({ e }: { e: Extract<SpawnEvent, { kind: 'success' }> }) {
   if (e.sourceType === 'cells') {
-    return <span style={{ color: '#aab4c2' }}>consumed cells</span>;
+    return <span style={{ color: '#aab4c2' }}>consumed cap</span>;
   }
-  // 1:1 attribution — show the SOURCE's post-fill state, which is what the
-  // user wants to see ("this house took 1 of factory#3's 8 jobs → now 1/8").
   if (e.targetCount === 1) {
     const a = e.attributions[0];
     if (!a) return <span style={{ color: '#7a8493' }}>no source found</span>;
@@ -170,8 +183,6 @@ function AttributionDetail({ e }: { e: SpawnEvent & { ok: true } }) {
       </span>
     );
   }
-  // 1:N attribution — show how many of the target slots were filled, plus a
-  // brief look at one source's state as a sanity check.
   const sample = e.attributions[0];
   return (
     <span style={{ color: '#aab4c2' }}>
@@ -186,38 +197,47 @@ function AttributionDetail({ e }: { e: SpawnEvent & { ok: true } }) {
 }
 
 function DemandTab() {
-  // Re-render on graph/buildings/demand-map updates so utilization stays live.
+  // Re-render on graph/buildings/demand-map updates.
   useWorldStore((s) => s.demandMapsVersion);
   const buildings = useWorldStore((s) => s.buildings);
   const demandMaps = useWorldStore((s) => s.demandMaps);
 
   return (
     <>
+      <div style={{ marginBottom: 4, color: '#566273' }}>
+        EXP_DEMAND={EXP_DEMAND} · EXP_LOCATION={EXP_LOCATION}
+      </div>
       <div style={HEAD_ROW}>
         <span style={{ width: 70 }}>demand</span>
-        <span style={{ width: 60 }}>src/cap</span>
-        <span style={{ width: 40 }}>sinks</span>
+        <span style={{ width: 30 }}>srcs</span>
+        <span style={{ width: 35 }}>sinks</span>
+        <span style={{ width: 50 }}>cap</span>
+        <span style={{ width: 50 }}>filled</span>
+        <span style={{ width: 50 }}>avail</span>
         <span style={{ width: 50 }}>fldMax</span>
-        <span style={{ width: 40 }}>thr</span>
-        <span style={{ width: 30 }}>w</span>
       </div>
       {DEMAND_TYPES.map((def) => {
-        const stat = computeDemandStat(def, buildings, demandMaps);
+        const stat = globalAvail(def, buildings, demandMaps);
+        const map = demandMaps.find((m) => m.id === def.id);
+        let fldMax = 0;
+        if (map) for (const v of map.roadField.values()) if (v > fldMax) fldMax = v;
+        let srcCount = 0;
+        if (def.source.kind === 'building') {
+          for (const b of buildings) if (b.type === def.source.type) srcCount++;
+        }
+        let sinkCount = 0;
+        for (const b of buildings) if (b.type === def.sink.type) sinkCount++;
         return (
           <div key={def.id} style={ROW}>
             <span style={{ width: 70, color: '#eaf2ff' }}>{def.id}</span>
-            <span style={{ width: 60 }}>{stat.sourceLabel}</span>
-            <span style={{ width: 40 }}>{stat.sinkCount}</span>
-            <span
-              style={{
-                width: 50,
-                color: stat.fieldMax >= def.threshold ? '#86d99a' : '#7a8493',
-              }}
-            >
-              {stat.fieldMax.toFixed(2)}
+            <span style={{ width: 30 }}>{def.source.kind === 'building' ? srcCount : '—'}</span>
+            <span style={{ width: 35 }}>{sinkCount}</span>
+            <span style={{ width: 50 }}>{fmt(stat.cap)}</span>
+            <span style={{ width: 50 }}>{fmt(stat.filled)}</span>
+            <span style={{ width: 50, color: stat.avail < 0 ? '#e57373' : '#aab4c2' }}>
+              {fmt(stat.avail)}
             </span>
-            <span style={{ width: 40 }}>{def.threshold}</span>
-            <span style={{ width: 30 }}>{def.weight}</span>
+            <span style={{ width: 50 }}>{fmt(fldMax)}</span>
           </div>
         );
       })}
@@ -225,79 +245,45 @@ function DemandTab() {
   );
 }
 
-interface DemandStat {
-  sourceLabel: string;
-  sinkCount: number;
-  fieldMax: number;
-}
+const fmt = (n: number): string => (Math.abs(n) < 100 ? n.toFixed(2) : n.toFixed(0));
 
-function computeDemandStat(
-  def: DemandDef,
-  buildings: Building[],
-  demandMaps: ReturnType<typeof useWorldStore.getState>['demandMaps'],
-): DemandStat {
-  let sourceLabel = '—';
-  if (def.source.kind === 'building') {
-    const sourceType = def.source.type;
-    const cap = def.source.capacity;
-    let count = 0;
-    let totalCap = 0;
-    let totalFilled = 0;
-    for (const b of buildings) {
-      if (b.type !== sourceType) continue;
-      count++;
-      totalCap += cap;
-      totalFilled += b.filled?.[def.id] ?? 0;
-    }
-    sourceLabel = totalCap > 0 ? `${totalFilled}/${totalCap}` : `${count} src`;
-  } else {
-    sourceLabel = 'cells';
-  }
-  let sinkCount = 0;
-  for (const b of buildings) if (b.type === def.sink.type) sinkCount++;
-  const map = demandMaps.find((m) => m.id === def.id);
-  let fieldMax = 0;
-  if (map) for (const v of map.roadField.values()) if (v > fieldMax) fieldMax = v;
-  return { sourceLabel, sinkCount, fieldMax };
-}
-
-function PoolTab() {
+function FieldTab() {
   useWorldStore((s) => s.demandMapsVersion);
   const graph = useWorldStore((s) => s.graph);
   const demandMaps = useWorldStore((s) => s.demandMaps);
-  const candidates = previewPool(graph, DEMAND_TYPES, demandMaps);
+  const rows = previewField(graph, DEMAND_TYPES, demandMaps);
 
-  if (candidates.length === 0) {
+  if (rows.length === 0) {
     return (
-      <div style={{ color: '#566273' }}>
-        pool empty — no edge clears any demand's threshold
-      </div>
+      <div style={{ color: '#566273' }}>no nodes with non-zero field — draw some roads</div>
     );
   }
-  const total = candidates.reduce((s, c) => s + c.weight, 0);
-  const top = candidates.slice(0, 12);
+  const top = rows.slice(0, 14);
 
   return (
     <>
       <div style={{ marginBottom: 4, color: '#566273' }}>
-        {candidates.length} candidates · Σ weight {total.toFixed(2)}
+        {rows.length} active nodes · top {top.length}
       </div>
       <div style={HEAD_ROW}>
-        <span style={{ width: 80 }}>demand</span>
-        <span style={{ width: 50 }}>edge</span>
-        <span style={{ width: 50 }}>score</span>
-        <span style={{ width: 50 }}>weight</span>
-        <span style={{ width: 40 }}>p%</span>
-      </div>
-      {top.map((c) => (
-        <div key={`${c.def.id}:${c.edgeId}`} style={ROW}>
-          <span style={{ width: 80, color: '#eaf2ff' }}>{c.def.id}</span>
-          <span style={{ width: 50 }}>#{c.edgeId}</span>
-          <span style={{ width: 50 }}>{c.score.toFixed(2)}</span>
-          <span style={{ width: 50 }}>{c.weight.toFixed(2)}</span>
-          <span style={{ width: 40, color: '#86d99a' }}>
-            {((c.weight / total) * 100).toFixed(1)}
+        <span style={{ width: 50 }}>node</span>
+        {DEMAND_TYPES.map((d) => (
+          <span key={d.id} style={{ width: 64 }}>
+            {d.id.slice(0, 7)}
           </span>
+        ))}
+      </div>
+      {top.map((r) => (
+        <div key={r.nodeId} style={ROW}>
+          <span style={{ width: 50 }}>#{r.nodeId}</span>
+          {DEMAND_TYPES.map((d) => {
+            const v = r.values[d.id] ?? 0;
+            return (
+              <span key={d.id} style={{ width: 64, color: v > 0 ? '#86d99a' : '#566273' }}>
+                {v > 0 ? v.toFixed(2) : '·'}
+              </span>
+            );
+          })}
         </div>
       ))}
     </>

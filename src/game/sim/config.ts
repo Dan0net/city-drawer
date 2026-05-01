@@ -25,3 +25,9 @@ export const FIELD_SPLAT_RADIUS = CELL_SIZE * 3;
 // sources to fill. Used by both the attribution step and the pre-spawn
 // nearest-source lookup.
 export const ATTRIBUTION_NEAREST_RADIUS = 96;
+
+// Spawn picker exponents. Two-stage roulette: first pick a demand weighted by
+// global avail^EXP_DEMAND, then pick an edge weighted by field^EXP_LOCATION.
+// Higher → sharper preference for high-availability / high-field choices.
+export const EXP_DEMAND = 2;
+export const EXP_LOCATION = 1;

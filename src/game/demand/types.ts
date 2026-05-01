@@ -25,10 +25,10 @@ export interface DemandDef {
   sink: DemandSink;
   // BFS decay per hop for building-sourced maps; ignored for cell-sourced.
   decay: number;
-  // Multiplier on the road-field score when adding the sink to the spawn pool.
-  weight: number;
-  // Minimum road-field value at an edge for it to qualify for spawning.
-  threshold: number;
+  // Cell-sourced only: how much of `cap` (= Σ roadField) one sink consumes.
+  // Default 1 → cap is denominated in factory-equivalents. Ignored for
+  // building-sourced (filled is computed from source.filled[id]).
+  consumption?: number;
   palette: Palette;
 }
 
@@ -61,8 +61,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     source: { kind: 'cells' },
     sink: { type: 'factory', count: 0 },
     decay: 0,
-    weight: 0.4,
-    threshold: 0.2,
+    consumption: 1,
     palette: resourcePalette,
   },
   {
@@ -71,8 +70,6 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     source: { kind: 'building', type: 'factory', capacity: 8 },
     sink: { type: 'small_house', count: 1 },
     decay: 0.7,
-    weight: 1,
-    threshold: 0.5,
     palette: ramp(40, 60, 110, 110, 140, 80, /* sat = one full factory */ 8),
   },
   {
@@ -81,8 +78,6 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     source: { kind: 'building', type: 'small_house', capacity: 1 },
     sink: { type: 'shop', count: 10 },
     decay: SERVICE_DECAY,
-    weight: 0.5,
-    threshold: 6,
     palette: ramp(60, 60, 60, 80, 140, 100, 10),
   },
   {
@@ -91,8 +86,6 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     source: { kind: 'building', type: 'small_house', capacity: 1 },
     sink: { type: 'park', count: 20 },
     decay: SERVICE_DECAY,
-    weight: 0.5,
-    threshold: 12,
     palette: ramp(60, 70, 120, 80, 70, 60, 20),
   },
 ];
