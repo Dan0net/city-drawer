@@ -2,8 +2,10 @@ import type { BuildingType } from '@game/buildings';
 
 type DemandId = 'resource' | 'jobs' | 'commercial' | 'leisure';
 
-// 0..1 → [r,g,b,a] in 0..255. Allocation-free; renderer writes into `out` at `offset`.
-export type Palette = (v: number, out: Uint8Array, offset: number) => void;
+// (value, sat) → [r,g,b,a] in 0..255. Allocation-free; renderer writes into
+// `out` at `offset`. `sat` is the value at which the ramp fully saturates
+// (typically max field for building-sourced, 1 for cell-sourced).
+export type Palette = (v: number, sat: number, out: Uint8Array, offset: number) => void;
 
 // SOURCE: where the demand comes from. `cells` reads a noise-seeded grid; a
 // building source broadcasts (capacity - filled[id]) along the road graph.
@@ -33,19 +35,16 @@ export interface DemandDef {
   palette: Palette;
 }
 
-const resourcePalette: Palette = (v, out, o) => {
-  const k = Math.max(0, Math.min(1, v));
+const resourcePalette: Palette = (v, sat, out, o) => {
+  const k = Math.max(0, Math.min(1, v / sat));
   out[o] = Math.round(120 + 135 * k);
   out[o + 1] = Math.round(70 + 90 * k);
   out[o + 2] = Math.round(20 + 30 * k);
   out[o + 3] = Math.round(220 * k);
 };
 
-// Palette saturation for a building-sourced field. Many sources sum BFS
-// contributions, so the natural cap is roughly capacity × 1/(1−decay). We
-// pass that in as `sat` so each demand's palette saturates appropriately.
-const ramp = (r0: number, r1: number, g0: number, g1: number, b0: number, b1: number, sat: number): Palette =>
-  (v, out, o) => {
+const ramp = (r0: number, r1: number, g0: number, g1: number, b0: number, b1: number): Palette =>
+  (v, sat, out, o) => {
     const k = Math.max(0, Math.min(1, v / sat));
     out[o] = Math.round(r0 + r1 * k);
     out[o + 1] = Math.round(g0 + g1 * k);
@@ -72,7 +71,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     sink: { type: 'small_house', count: 1 },
     decay: 0.7,
     unitArea: 280,
-    palette: ramp(40, 60, 110, 110, 140, 80, /* sat = one full factory */ 8),
+    palette: ramp(40, 60, 110, 110, 140, 80),
   },
   {
     id: 'commercial',
@@ -81,7 +80,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     sink: { type: 'shop', count: 10 },
     decay: SERVICE_DECAY,
     unitArea: 80,
-    palette: ramp(60, 60, 60, 80, 140, 100, 10),
+    palette: ramp(60, 60, 60, 80, 140, 100),
   },
   {
     id: 'leisure',
@@ -90,6 +89,6 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     sink: { type: 'park', count: 30 },
     decay: SERVICE_DECAY,
     unitArea: 30,
-    palette: ramp(60, 70, 120, 80, 70, 60, 20),
+    palette: ramp(60, 70, 120, 80, 70, 60),
   },
 ];

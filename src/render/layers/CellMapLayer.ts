@@ -72,8 +72,9 @@ export class CellMapLayer {
     if (!this.rgba || !this.source) return;
     const { data } = map.cellMap;
     const rgba = this.rgba;
+    const sat = map.cellSat;
     for (let p = 0; p < data.length; p++) {
-      map.palette(data[p], rgba, p * 4);
+      map.palette(data[p], sat, rgba, p * 4);
     }
     this.source.update();
   }

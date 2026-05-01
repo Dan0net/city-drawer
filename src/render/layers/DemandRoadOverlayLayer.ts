@@ -74,8 +74,8 @@ export class DemandRoadOverlayLayer {
 
       // Each map's palette is responsible for its own value range / clamping.
       // Resource is already 0..1; jobs scales internally by JOB_SUPPLY.
-      map.palette(va, colorScratchA, 0);
-      map.palette(vb, colorScratchB, 0);
+      map.palette(va, map.graphSat, colorScratchA, 0);
+      map.palette(vb, map.graphSat, colorScratchB, 0);
 
       const baseW =
         e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
