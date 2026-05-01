@@ -3,21 +3,15 @@ import type { BuildingId, BuildingType } from '@game/buildings';
 
 const BUFFER_LIMIT = 200;
 
-interface AttributionRecord {
-  sourceId: BuildingId;
-  filledAfter: number;
-}
-
 export type SpawnEvent = { id: number } & (
   | {
       kind: 'success';
       t: number;
       demandId: string;
       sinkType: BuildingType;
-      sourceType: BuildingType | 'cells';
-      sourceCapacity: number;
-      attributions: AttributionRecord[];
-      targetCount: number;
+      sinkId: BuildingId;
+      slotsClaimed: number;
+      slotsDemanded: number;
     }
   | {
       kind: 'physical_failure';
@@ -25,12 +19,6 @@ export type SpawnEvent = { id: number } & (
       demandId: string;
       sinkType: BuildingType;
       reason: string;
-    }
-  | {
-      kind: 'no_route_for_demand';
-      t: number;
-      demandId: string;
-      sinkType: BuildingType;
     }
   | { kind: 'no_spawnable_demand'; t: number }
 );

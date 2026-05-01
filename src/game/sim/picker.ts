@@ -3,11 +3,10 @@ import type { Building } from '@game/buildings';
 import type { DemandDef } from '@game/demand/types';
 import { DEMAND_TYPES } from '@game/demand/types';
 import type { DemandMap } from '@game/demand/maps';
-import { perSinkConsumption } from './attribution';
+import { sinkSlotDemand, type AttributionLedgers } from './attribution';
 import { EXP_DEMAND, EXP_LOCATION } from './config';
 
 // Weighted roulette over arbitrary items. Returns null when total weight ≤ 0.
-// Single roulette implementation in the codebase — both pick stages use it.
 function weightedPick<T>(
   items: ReadonlyArray<T>,
   weight: (t: T) => number,
@@ -33,51 +32,45 @@ interface AvailStat {
 // Layer 1 truth — global cap/filled/avail for a demand. Source of truth for
 // the demand-roll dice and the Demand tab.
 //
-// Building-sourced: cap = nSources × source.capacity; filled = Σ filled[id]
-//   across sources; avail = cap − filled.
-// Cell-sourced: cap = map.reachableSum (Σ cell-value × cellArea, each cell
-//   counted at most once across all node discs — see reachableCellSum in
-//   demand/compute.ts); filled = nSinks × (consumption ?? 1); avail can go
-//   negative if roads were bulldozed below the level needed to sustain
-//   already-built sinks; not clamped — caller decides display.
+// Building-sourced: cap = nSources × source.capacity; filled = ledger.totalSlots.
+// Cell-sourced: cap = floor(map.reachableSum / unitArea); filled = Σ
+//   sinkSlotDemand(b, def) across sink-type buildings.
+// avail is non-negative by construction in both cases (the building-sourced
+// invariant is maintained by the fill helpers, which never overshoot capacity).
 export function globalAvail(
   def: DemandDef,
   buildings: Building[],
   demandMaps: ReadonlyArray<DemandMap>,
+  ledgers: AttributionLedgers,
 ): AvailStat {
   if (def.source.kind === 'building') {
     const sourceType = def.source.type;
     const capacity = def.source.capacity;
     let cap = 0;
-    let filled = 0;
-    for (const b of buildings) {
-      if (b.type !== sourceType) continue;
-      cap += capacity;
-      filled += b.filled?.[def.id] ?? 0;
-    }
-    return { cap, filled, avail: cap - filled };
+    for (const b of buildings) if (b.type === sourceType) cap += capacity;
+    const filled = ledgers.get(def.id)?.totalSlots ?? 0;
+    return { cap, filled, avail: Math.max(0, cap - filled) };
   }
   const map = demandMaps.find((m) => m.id === def.id);
   const unit = def.unitArea ?? 1;
   const cap = Math.floor((map?.reachableSum ?? 0) / unit);
   let filled = 0;
   for (const b of buildings) {
-    if (b.type === def.sink.type) filled += perSinkConsumption(b, def, 1);
+    if (b.type === def.sink.type) filled += sinkSlotDemand(b, def);
   }
-  return { cap, filled, avail: cap - filled };
+  return { cap, filled, avail: Math.max(0, cap - filled) };
 }
 
-// Stage 1: pick which demand fires this tick. Excludes demands in `excluded`
-// (already tried + failed routing) and any with avail ≤ 0. Weight = avail^EXP.
+// Stage 1: pick which demand fires this tick. Skips demands with avail ≤ 0.
+// Weight = avail^EXP.
 export function pickDemand(
   buildings: Building[],
   demandMaps: ReadonlyArray<DemandMap>,
-  excluded: ReadonlySet<string>,
+  ledgers: AttributionLedgers,
   rand: () => number,
 ): DemandDef | null {
-  const candidates = DEMAND_TYPES.filter((d) => !excluded.has(d.id));
-  return weightedPick(candidates, (d) => {
-    const a = globalAvail(d, buildings, demandMaps).avail;
+  return weightedPick(DEMAND_TYPES, (d) => {
+    const a = globalAvail(d, buildings, demandMaps, ledgers).avail;
     return a > 0 ? Math.pow(a, EXP_DEMAND) : 0;
   }, rand);
 }
@@ -104,7 +97,6 @@ export function pickEdgeForDemand(
   if (edges.length === 0) return null;
   const weighted = weightedPick(edges, (e) => Math.pow(edgeScore(map, e.from, e.to), EXP_LOCATION), rand);
   if (weighted) return weighted.id;
-  // Uniform fallback.
   return edges[Math.floor(rand() * edges.length)].id;
 }
 

@@ -128,16 +128,21 @@ const ICON_COL: CSSProperties = { width: 10 };
 function EventRow({ e }: { e: SpawnEvent }) {
   const t = `${e.t.toFixed(1)}s`;
   switch (e.kind) {
-    case 'success':
+    case 'success': {
+      const partial = e.slotsClaimed < e.slotsDemanded;
       return (
-        <div style={{ ...ROW, color: '#86d99a' }}>
+        <div style={{ ...ROW, color: partial ? '#e3c364' : '#86d99a' }}>
           <span style={TIME_COL}>{t}</span>
-          <span style={ICON_COL}>✓</span>
+          <span style={ICON_COL}>{partial ? '◐' : '✓'}</span>
           <span style={{ whiteSpace: 'normal' }}>
-            {e.sinkType} · {e.demandId} · <SuccessDetail e={e} />
+            {e.sinkType}#{e.sinkId} · {e.demandId} ·{' '}
+            <span style={{ color: '#aab4c2' }}>
+              {e.slotsClaimed}/{e.slotsDemanded} slots
+            </span>
           </span>
         </div>
       );
+    }
     case 'physical_failure':
       return (
         <div style={{ ...ROW, color: '#e57373' }}>
@@ -145,17 +150,6 @@ function EventRow({ e }: { e: SpawnEvent }) {
           <span style={ICON_COL}>✗</span>
           <span>
             {e.sinkType} · <span style={{ color: '#aab4c2' }}>{e.reason}</span>
-          </span>
-        </div>
-      );
-    case 'no_route_for_demand':
-      return (
-        <div style={{ ...ROW, color: '#e3c364' }}>
-          <span style={TIME_COL}>{t}</span>
-          <span style={ICON_COL}>⚠</span>
-          <span>
-            {e.sinkType} · {e.demandId} ·{' '}
-            <span style={{ color: '#aab4c2' }}>no graph route to source</span>
           </span>
         </div>
       );
@@ -170,37 +164,13 @@ function EventRow({ e }: { e: SpawnEvent }) {
   }
 }
 
-function SuccessDetail({ e }: { e: Extract<SpawnEvent, { kind: 'success' }> }) {
-  if (e.sourceType === 'cells') {
-    return <span style={{ color: '#aab4c2' }}>consumed cap</span>;
-  }
-  if (e.targetCount === 1) {
-    const a = e.attributions[0];
-    if (!a) return <span style={{ color: '#7a8493' }}>no source found</span>;
-    return (
-      <span style={{ color: '#aab4c2' }}>
-        {e.sourceType}#{a.sourceId} {a.filledAfter}/{e.sourceCapacity}
-      </span>
-    );
-  }
-  const sample = e.attributions[0];
-  return (
-    <span style={{ color: '#aab4c2' }}>
-      {e.attributions.length}/{e.targetCount} {e.sourceType}
-      {sample && (
-        <span style={{ color: '#7a8493' }}>
-          {' '}(e.g. #{sample.sourceId} {sample.filledAfter}/{e.sourceCapacity})
-        </span>
-      )}
-    </span>
-  );
-}
-
 function DemandTab() {
   // Re-render on graph/buildings/demand-map updates.
   useWorldStore((s) => s.demandMapsVersion);
+  useWorldStore((s) => s.attributionsVersion);
   const buildings = useWorldStore((s) => s.buildings);
   const demandMaps = useWorldStore((s) => s.demandMaps);
+  const ledgers = useWorldStore((s) => s.attributions);
 
   return (
     <>
@@ -217,7 +187,7 @@ function DemandTab() {
         <span style={{ width: 50 }}>fldMax</span>
       </div>
       {DEMAND_TYPES.map((def) => {
-        const stat = globalAvail(def, buildings, demandMaps);
+        const stat = globalAvail(def, buildings, demandMaps, ledgers);
         const map = demandMaps.find((m) => m.id === def.id);
         let fldMax = 0;
         if (map) for (const v of map.roadField.values()) if (v > fldMax) fldMax = v;

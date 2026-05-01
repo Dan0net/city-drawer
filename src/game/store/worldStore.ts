@@ -14,6 +14,7 @@ import {
 } from '@game/drawing/pointer';
 import type { SnapResult } from '@game/drawing/snap';
 import { createDemandMaps, type DemandMap } from '@game/demand/maps';
+import { createAttributionLedgers, type AttributionLedgers } from '@game/sim/attribution';
 import { createSpawnEngine } from '@game/sim/spawn';
 import { useDebugStore } from '@game/store/debugStore';
 
@@ -45,6 +46,10 @@ interface WorldState {
   demandMaps: DemandMap[];
   // Bumped when any demand map's data changes (cell write, road-field rebuild).
   demandMapsVersion: number;
+  // Per-demand bidirectional source↔sink ledger. Source of truth for filled
+  // slots; mutated by attribution helpers, read by maps, picker, hover.
+  attributions: AttributionLedgers;
+  attributionsVersion: number;
 
   setTool(t: Tool): void;
   toggleTool(t: Exclude<Tool, 'none'>): void;
@@ -73,6 +78,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
   const buildings: Building[] = [];
   const failedAttempts: FailedAttempt[] = [];
   const demandMaps = createDemandMaps(1337);
+  const attributions = createAttributionLedgers();
   const spawn = createSpawnEngine({
     onEvent: (e) => useDebugStore.getState().push(e),
   });
@@ -97,6 +103,8 @@ export const useWorldStore = create<WorldState>((set, get) => {
     paused: false,
     demandMaps,
     demandMapsVersion: 0,
+    attributions,
+    attributionsVersion: 0,
 
     setTool: (t) => set({ tool: t, ...idleDrawingState }),
 
@@ -137,12 +145,13 @@ export const useWorldStore = create<WorldState>((set, get) => {
     cancelDraw: () => set({ ...idleDrawingState }),
 
     removeAtPointer: () => {
-      const { graph: g, bulldozeHover, buildings: bs } = get();
+      const { graph: g, bulldozeHover, buildings: bs, attributions: ledgers } = get();
       if (!bulldozeHover) return;
       if (bulldozeHover.kind === 'building') {
-        const bumpGraph = removeBuildingRestoring(g, bs, bulldozeHover.id, null);
+        const bumpGraph = removeBuildingRestoring(g, bs, ledgers, bulldozeHover.id, null);
         set({
           buildingsVersion: get().buildingsVersion + 1,
+          attributionsVersion: get().attributionsVersion + 1,
           bulldozeHover: null,
           ...(bumpGraph ? { graphVersion: g.version } : {}),
         });
@@ -161,7 +170,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
       for (let i = bs.length - 1; i >= 0; i--) {
         const primaryEdge = bs[i].consumed[0]?.edgeId;
         if (primaryEdge != null && affected.has(primaryEdge)) {
-          removeBuildingRestoring(g, bs, bs[i].id, affected);
+          removeBuildingRestoring(g, bs, ledgers, bs[i].id, affected);
           bumpBuildings = true;
         }
       }
@@ -171,12 +180,15 @@ export const useWorldStore = create<WorldState>((set, get) => {
         graphVersion: g.version,
         bulldozeHover: null,
       };
-      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
+      if (bumpBuildings) {
+        patch.buildingsVersion = get().buildingsVersion + 1;
+        patch.attributionsVersion = get().attributionsVersion + 1;
+      }
       set(patch);
     },
 
     clearBuildings: () => {
-      const { graph: g, buildings: bs, failedAttempts: fa } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers } = get();
       if (bs.length === 0 && fa.length === 0) return;
       let bumpGraph = false;
       for (const b of bs) {
@@ -186,23 +198,35 @@ export const useWorldStore = create<WorldState>((set, get) => {
       }
       bs.length = 0;
       fa.length = 0;
+      for (const led of ledgers.values()) {
+        led.bySink.clear();
+        led.bySource.clear();
+        led.totalSlots = 0;
+      }
       set({
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
+        attributionsVersion: get().attributionsVersion + 1,
         bulldozeHover: null,
         ...(bumpGraph ? { graphVersion: g.version } : {}),
       });
     },
 
     clearAll: () => {
-      const { graph: g, buildings: bs, failedAttempts: fa } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers } = get();
       g.clear();
       bs.length = 0;
       fa.length = 0;
+      for (const led of ledgers.values()) {
+        led.bySink.clear();
+        led.bySource.clear();
+        led.totalSlots = 0;
+      }
       set({
         graphVersion: g.version,
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
+        attributionsVersion: get().attributionsVersion + 1,
         ...idleDrawingState,
       });
     },
@@ -217,6 +241,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
           buildings: s.buildings,
           failedAttempts: s.failedAttempts,
           demandMaps: s.demandMaps,
+          ledgers: s.attributions,
         },
         newSimTime,
         Math.random,
@@ -225,6 +250,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
       if (r.buildingsChanged) patch.buildingsVersion = s.buildingsVersion + 1;
       if (r.failedChanged) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
       if (r.graphChanged) patch.graphVersion = s.graph.version;
+      if (r.attributionsChanged) patch.attributionsVersion = s.attributionsVersion + 1;
       set(patch);
     },
 
@@ -238,16 +264,21 @@ export const useWorldStore = create<WorldState>((set, get) => {
 {
   let lastGraphVersion = -1;
   let lastBuildingsVersion = -1;
+  let lastAttributionsVersion = -1;
   const recompute = (s: WorldState): void => {
     if (
       s.graphVersion === lastGraphVersion &&
-      s.buildingsVersion === lastBuildingsVersion
+      s.buildingsVersion === lastBuildingsVersion &&
+      s.attributionsVersion === lastAttributionsVersion
     ) {
       return;
     }
     lastGraphVersion = s.graphVersion;
     lastBuildingsVersion = s.buildingsVersion;
-    for (const m of s.demandMaps) m.recompute({ graph: s.graph, buildings: s.buildings });
+    lastAttributionsVersion = s.attributionsVersion;
+    for (const m of s.demandMaps) {
+      m.recompute({ graph: s.graph, buildings: s.buildings, ledgers: s.attributions });
+    }
     useWorldStore.setState((curr) => ({ demandMapsVersion: curr.demandMapsVersion + 1 }));
   };
   recompute(useWorldStore.getState());

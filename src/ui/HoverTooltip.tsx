@@ -4,6 +4,12 @@ import type { Graph, EdgeId, NodeId } from '@game/graph';
 import { useWorldStore } from '@game/store/worldStore';
 import { DEMAND_TYPES, type DemandDef } from '@game/demand/types';
 import type { DemandMap } from '@game/demand/maps';
+import {
+  sinkSlotDemand,
+  slotsClaimedBy,
+  slotsGivenBy,
+  type AttributionLedgers,
+} from '@game/sim/attribution';
 
 const TOOLTIP: CSSProperties = {
   position: 'fixed',
@@ -59,7 +65,9 @@ export function HoverTooltip() {
 
 function BuildingBody({ id }: { id: number }) {
   useWorldStore((s) => s.demandMapsVersion);
+  useWorldStore((s) => s.attributionsVersion);
   const buildings = useWorldStore((s) => s.buildings);
+  const ledgers = useWorldStore((s) => s.attributions);
   const b = buildings.find((x) => x.id === id);
   if (!b) return <span style={{ color: '#566273' }}>building gone</span>;
 
@@ -81,29 +89,25 @@ function BuildingBody({ id }: { id: number }) {
         <>
           <div style={{ ...HEADER, marginTop: 4, fontSize: 10 }}>SOURCE</div>
           {sourceDefs.map((d) => (
-            <SourceRow key={d.id} b={b} def={d} />
+            <SourceRow key={d.id} b={b} def={d} ledgers={ledgers} />
           ))}
         </>
       )}
-      {sinkDef && (
+      {sinkDef && sinkDef.source.kind === 'building' && (
         <>
           <div style={{ ...HEADER, marginTop: 4, fontSize: 10 }}>SINK</div>
-          <div style={ROW}>
-            <span style={KEY}>{sinkDef.id}</span>
-            <span>
-              {b.attributedToIds?.length ?? 0}/{sinkDef.sink.count} {sourceLabel(sinkDef)}
-            </span>
-          </div>
+          <SinkRow b={b} def={sinkDef} ledgers={ledgers} />
         </>
       )}
     </>
   );
 }
 
-function SourceRow({ b, def }: { b: Building; def: DemandDef }) {
+function SourceRow({ b, def, ledgers }: { b: Building; def: DemandDef; ledgers: AttributionLedgers }) {
   if (def.source.kind !== 'building') return null;
   const cap = def.source.capacity;
-  const filled = b.filled?.[def.id] ?? 0;
+  const ledger = ledgers.get(def.id);
+  const filled = ledger ? slotsGivenBy(ledger, b.id) : 0;
   const avail = cap - filled;
   return (
     <div style={ROW}>
@@ -111,6 +115,24 @@ function SourceRow({ b, def }: { b: Building; def: DemandDef }) {
       <span>
         filled {filled}/{cap} · avail{' '}
         <span style={{ color: avail <= 0 ? '#e57373' : '#86d99a' }}>{avail}</span>
+      </span>
+    </div>
+  );
+}
+
+function SinkRow({ b, def, ledgers }: { b: Building; def: DemandDef; ledgers: AttributionLedgers }) {
+  const ledger = ledgers.get(def.id);
+  const claimed = ledger ? slotsClaimedBy(ledger, b.id) : 0;
+  const demand = sinkSlotDemand(b, def);
+  const partial = claimed < demand;
+  return (
+    <div style={ROW}>
+      <span style={KEY}>{def.id}</span>
+      <span>
+        <span style={{ color: partial ? '#e3c364' : '#aab4c2' }}>
+          {claimed}/{demand}
+        </span>{' '}
+        slots {sourceLabel(def)}
       </span>
     </div>
   );

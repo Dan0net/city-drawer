@@ -8,6 +8,7 @@ import { BuildingsLayer } from '@render/layers/BuildingsLayer';
 import { AvailableFrontagesLayer } from '@render/layers/AvailableFrontagesLayer';
 import { CellMapLayer } from '@render/layers/CellMapLayer';
 import { DemandRoadOverlayLayer } from '@render/layers/DemandRoadOverlayLayer';
+import { HoverRoutesLayer } from '@render/layers/HoverRoutesLayer';
 import { createTickLoop } from '@game/core/tickLoop';
 import { useCameraStore } from '@game/store/cameraStore';
 import { useUiStore } from '@game/store/uiStore';
@@ -45,6 +46,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       const buildings = new BuildingsLayer();
       const edges = new EdgesLayer();
       const demandRoadOverlay = new DemandRoadOverlayLayer();
+      const hoverRoutes = new HoverRoutesLayer();
       const frontages = new AvailableFrontagesLayer();
       const ghost = new GhostLayer();
       handle.world.addChild(grid.container);
@@ -52,6 +54,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
       handle.world.addChild(buildings.container);
       handle.world.addChild(edges.container);
       handle.world.addChild(demandRoadOverlay.container);
+      handle.world.addChild(hoverRoutes.container);
       handle.world.addChild(frontages.container);
       handle.world.addChild(ghost.container);
 
@@ -267,6 +270,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         buildings.update();
         edges.update();
         demandRoadOverlay.update();
+        hoverRoutes.update();
         frontages.update();
         ghost.update();
 

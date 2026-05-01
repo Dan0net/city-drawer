@@ -18,10 +18,15 @@ import {
 } from './compute';
 import { seedResourceBlobs } from './seed';
 import { DEMAND_TYPES, type DemandDef, type Palette } from './types';
+import {
+  slotsGivenBy,
+  type AttributionLedgers,
+} from '@game/sim/attribution';
 
 interface RecomputeCtx {
   graph: Graph;
   buildings: Building[];
+  ledgers: AttributionLedgers;
 }
 
 export interface DemandMap {
@@ -45,8 +50,6 @@ export interface DemandMap {
   cellSat: number;
   recompute(ctx: RecomputeCtx): void;
 }
-
-const filledOf = (b: Building, def: DemandDef): number => b.filled?.[def.id] ?? 0;
 
 function createDemandMap(def: DemandDef, seed: number): DemandMap {
   const cellMap = createCellMap(GRID_RES, GRID_RES, CELL_SIZE, WORLD_MIN, WORLD_MIN);
@@ -74,8 +77,8 @@ function createDemandMap(def: DemandDef, seed: number): DemandMap {
     return map;
   }
 
-  // Building-sourced: each source broadcasts (capacity − filled[id]) along the
-  // graph with decay, summed across sources.
+  // Building-sourced: each source broadcasts (capacity − slots-given-out)
+  // along the graph with decay, summed across sources.
   const sourceType = def.source.type;
   const capacity = def.source.capacity;
   const map: DemandMap = {
@@ -89,9 +92,10 @@ function createDemandMap(def: DemandDef, seed: number): DemandMap {
     cellSat: 1,
     recompute: (ctx) => {
       roadField.clear();
+      const ledger = ctx.ledgers.get(def.id)!;
       for (const b of ctx.buildings) {
         if (b.type !== sourceType) continue;
-        const remaining = capacity - filledOf(b, def);
+        const remaining = capacity - slotsGivenBy(ledger, b.id);
         if (remaining <= 0) continue;
         const node = ctx.graph.nearestNode(b.centroid.x, b.centroid.y, SOURCE_ANCHOR_RADIUS);
         if (!node) continue;

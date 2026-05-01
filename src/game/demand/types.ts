@@ -1,6 +1,6 @@
 import type { BuildingType } from '@game/buildings';
 
-type DemandId = 'resource' | 'jobs' | 'commercial' | 'leisure';
+export type DemandId = 'resource' | 'jobs' | 'commercial' | 'leisure';
 
 // (value, sat) → [r,g,b,a] in 0..255. Allocation-free; renderer writes into
 // `out` at `offset`. `sat` is the value at which the ramp fully saturates
@@ -8,17 +8,18 @@ type DemandId = 'resource' | 'jobs' | 'commercial' | 'leisure';
 export type Palette = (v: number, sat: number, out: Uint8Array, offset: number) => void;
 
 // SOURCE: where the demand comes from. `cells` reads a noise-seeded grid; a
-// building source broadcasts (capacity - filled[id]) along the road graph.
+// building source broadcasts (capacity − slotsGivenBy(ledger, b.id)) along
+// the road graph.
 type DemandSource =
   | { kind: 'cells' }
   | { kind: 'building'; type: BuildingType; capacity: number };
 
-// SINK: a building type that, when placed, fills `count` source slots near it.
-// A building type sinks at most one demand (KISS); it can SOURCE any number.
+// SINK: a building type that, when placed, claims slots from nearby sources
+// closest-first via BFS. A building type sinks at most one demand (KISS); it
+// can SOURCE any number.
 interface DemandSink {
   type: BuildingType;
-  count: number;
-  // Multiplier on per-sink consumption. Default 1.
+  // Multiplier on per-sink slot demand. Default 1.
   consumption?: number;
 }
 
@@ -28,9 +29,8 @@ export interface DemandDef {
   source: DemandSource;
   sink: DemandSink;
   decay: number;
-  // Building-sourced only: divisor that converts a sink's per-source area
-  // share into integer slot consumption. Set so a default-sized sink
-  // consumes exactly 1 slot per attributed source.
+  // Divisor that converts a sink's area to integer slot demand. A
+  // default-sized sink consumes ≈ 1 slot. Undefined → use raw area.
   unitArea?: number;
   palette: Palette;
 }
@@ -59,7 +59,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     id: 'resource',
     label: 'resource',
     source: { kind: 'cells' },
-    sink: { type: 'factory', count: 0, consumption: 3 },
+    sink: { type: 'factory', consumption: 3 },
     decay: 0,
     unitArea: 2500,
     palette: resourcePalette,
@@ -68,7 +68,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     id: 'jobs',
     label: 'jobs',
     source: { kind: 'building', type: 'factory', capacity: 16 },
-    sink: { type: 'small_house', count: 1 },
+    sink: { type: 'small_house' },
     decay: 0.7,
     unitArea: 280,
     palette: ramp(40, 60, 110, 110, 140, 80),
@@ -77,7 +77,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     id: 'commercial',
     label: 'commercial',
     source: { kind: 'building', type: 'small_house', capacity: 1 },
-    sink: { type: 'shop', count: 10 },
+    sink: { type: 'shop' },
     decay: SERVICE_DECAY,
     unitArea: 80,
     palette: ramp(60, 60, 60, 80, 140, 100),
@@ -86,7 +86,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     id: 'leisure',
     label: 'leisure',
     source: { kind: 'building', type: 'small_house', capacity: 1 },
-    sink: { type: 'park', count: 30 },
+    sink: { type: 'park' },
     decay: SERVICE_DECAY,
     unitArea: 30,
     palette: ramp(60, 70, 120, 80, 70, 60),

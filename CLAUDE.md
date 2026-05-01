@@ -36,23 +36,32 @@ Phase PRDs in `docs/`.
 
 ## Demand model
 
-Two layers, kept separate:
+Two layers, kept separate.
 
-**Layer 1 — global truth.** For each demand, `cap`, `filled`, `avail` are exact sums computed from the actual building list (and cellMap for cell-sourced). `avail` drives the demand-roll; the demand tab shows all three. Computed by `globalAvail()` in `sim/picker.ts` — single source of truth.
+**Layer 1 — global truth.** Per demand, `cap`/`filled`/`avail` from `globalAvail()` in `sim/picker.ts`. Drives the demand-roll. `avail` is non-negative by construction.
 
-- Building-sourced (jobs/commercial/leisure): `cap = nSources × source.capacity`, `filled = Σ filled[id]` across sources.
-- Cell-sourced (resource): `cap = Σ roadField` across all graph nodes (the network's reach into the cell layer), `filled = nSinks × (def.consumption ?? 1)`. Cells are static after seed — never cleared. Avail can go negative if roads are bulldozed below the level needed to sustain already-built sinks; not clamped.
+- Building-sourced (jobs/commercial/leisure): `cap = nSources × source.capacity`, `filled = ledger.totalSlots`.
+- Cell-sourced (resource): `cap = floor(map.reachableSum / unitArea)`, `filled = Σ sinkSlotDemand(b, def)` across sink-type buildings.
 
-**Layer 2 — graph projection.** Each demand has a per-node `roadField`. Building-sourced fields are BFS-decay broadcasts of `(capacity − filled[id])` from each source. Cell-sourced fields integrate nearby cells via a sample radius. This is the spawn-location bias — approximate by design (decay loses mass).
+**Layer 2 — graph projection.** Each demand has a per-node `roadField`. Building-sourced: BFS-decay broadcasts of `(capacity − slotsGivenBy(ledger, b.id))` from each source. Cell-sourced: integrates nearby cells via sample radius. Spawn-location bias — approximate by design (decay loses mass).
+
+**Attribution ledger** (`sim/attribution.ts`): per-demand bidirectional map `{ bySink, bySource, totalSlots }`, source of truth for who is connected to whom and how many slots flow. Lives on `worldStore.attributions`. There is no `Building.filled` — read source slack via `slotsGivenBy(ledger, sourceId)`, sink fill via `slotsClaimedBy(ledger, sinkId)`.
+
+**Closest-first allocation.** A sink's total slot demand is `sinkSlotDemand(sink, def) = max(1, floor(area/unitArea)) × consumption`, independent of source count. Two symmetric BFS-greedy helpers settle every placement:
+
+- `fillFromNewSink(sinkId, def)` — pulls slots from closest source-with-slack, hop-by-hop, until sink is full or graph exhausts.
+- `fillFromNewSource(sourceId, def)` — pushes slots to closest under-allocated sink-of-correct-type, hop-by-hop, until source is full or graph exhausts.
+
+Sinks may end up partially attributed; that's fine — they fill up later when a source is built nearby. No spawn rejection.
+
+**Bulldoze** (`buildings/bulldoze.ts`): `dropFromLedgers(id)` strips both directions, returning the surviving counterparties. `settleAfterDrop` then runs the matching helper on each — bulldozing a source frees nothing on the source side (it's gone) but each orphaned sink BFSes for replacement slots; bulldozing a sink frees source slots, each affected source BFSes to fill nearby under-allocated sinks. Same two helpers as placement; bulldoze is placement-in-reverse for survivors.
 
 **Two-stage spawn picker** (`sim/spawn.ts`):
 1. Roll a demand: `P(d) ∝ globalAvail(d) ^ EXP_DEMAND`.
-2. Roll an edge for that demand: `P(e) ∝ field(e, d) ^ EXP_LOCATION`. Uniform fallback when all fields are zero, so a sink can still spawn — global accounting stays accurate.
-3. After physical placement, attribute via graph BFS (`findSources`). If no graph route to a source with slack, exclude that demand for this tick and re-roll. If all demands exhausted, skip the tick.
+2. Roll an edge for that demand: `P(e) ∝ field(e, d) ^ EXP_LOCATION`. Uniform fallback when all fields are zero.
+3. Place. `settleNewBuilding` then runs the fill helpers for every demand the new building touches.
 
-`EXP_DEMAND` and `EXP_LOCATION` live in `sim/config.ts`.
-
-A building type sinks at most one demand; it can source any number. `Building.filled` is `Record<DemandId, number>`, keyed by demand id, owned by the demand layer. New demand or building type → add a row to `DEMAND_TYPES` / `BUILDING_TYPES`. No branches on building type in sim, store, or bulldoze.
+`EXP_DEMAND` / `EXP_LOCATION` in `sim/config.ts`. A building type sinks at most one demand; it can source any number. New demand/building → add a row to `DEMAND_TYPES` / `BUILDING_TYPES`. No branches on building type in sim, store, or bulldoze.
 
 ## Layering
 

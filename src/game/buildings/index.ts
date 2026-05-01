@@ -19,13 +19,6 @@ export interface Building {
   // Frontage ranges this building occupies (front + any back/side faces along
   // other roads). Restored on removal.
   consumed: ConsumedFrontage[];
-  // Slots this building has filled AS A SOURCE for each demand. Read by the
-  // demand's BFS broadcast as (def.source.capacity − filled[def.id]). The
-  // demand layer manages writes; the building stays a passive record.
-  filled?: Record<string, number>;
-  // Sources this building filled AS A SINK at spawn. Bulldoze undoes them.
-  // The demand is recovered via DEMAND_TYPES.find(d => d.sink.type === type).
-  attributedToIds?: BuildingId[];
 }
 
 // Rejected spawn attempt. Rendered as a red ghost then pruned. Diagnostic.
