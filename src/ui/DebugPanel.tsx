@@ -4,8 +4,9 @@ import { useWorldStore } from '@game/store/worldStore';
 import { DEMAND_TYPES } from '@game/demand/types';
 import { globalAvail, previewField } from '@game/sim/picker';
 import { EXP_DEMAND, EXP_LOCATION } from '@game/sim/config';
+import { sinkSlotDemand, slotsClaimedBy, slotsGivenBy } from '@game/sim/attribution';
 
-type Tab = 'events' | 'demand' | 'field';
+type Tab = 'events' | 'demand' | 'field' | 'ledger';
 
 const PANEL: CSSProperties = {
   position: 'absolute',
@@ -59,7 +60,7 @@ export function DebugPanel() {
   return (
     <div style={PANEL}>
       <div style={HEADER}>
-        {(['events', 'demand', 'field'] as Tab[]).map((t) => (
+        {(['events', 'demand', 'field', 'ledger'] as Tab[]).map((t) => (
           <button
             key={t}
             style={tab === t ? TAB_BTN_ACTIVE : TAB_BTN_BASE}
@@ -84,6 +85,7 @@ export function DebugPanel() {
           {tab === 'events' && <EventsTab />}
           {tab === 'demand' && <DemandTab />}
           {tab === 'field' && <FieldTab />}
+          {tab === 'ledger' && <LedgerTab />}
         </div>
       )}
     </div>
@@ -254,6 +256,67 @@ function FieldTab() {
               </span>
             );
           })}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function LedgerTab() {
+  useWorldStore((s) => s.attributionsVersion);
+  useWorldStore((s) => s.buildingsVersion);
+  const ledgers = useWorldStore((s) => s.attributions);
+  const buildings = useWorldStore((s) => s.buildings);
+
+  const rows = buildings
+    .map((b) => {
+      const entries: { demandId: string; filled: number; cap: number }[] = [];
+      for (const def of DEMAND_TYPES) {
+        const ledger = ledgers.get(def.id);
+        if (def.source.kind === 'building' && b.type === def.source.type) {
+          entries.push({
+            demandId: def.id,
+            filled: ledger ? slotsGivenBy(ledger, b.id) : 0,
+            cap: def.source.capacity,
+          });
+        }
+        if (b.type === def.sink.type) {
+          const cap = sinkSlotDemand(b, def);
+          // Cell-sourced sinks have no per-source ledger entries; cells supply
+          // unconditionally so filled == cap by definition.
+          const filled = def.source.kind === 'building'
+            ? (ledger ? slotsClaimedBy(ledger, b.id) : 0)
+            : cap;
+          entries.push({ demandId: def.id, filled, cap });
+        }
+      }
+      return { b, entries };
+    })
+    .filter((r) => r.entries.length > 0)
+    .sort((a, b) => (a.b.type === b.b.type ? a.b.id - b.b.id : a.b.type.localeCompare(b.b.type)));
+
+  if (rows.length === 0) {
+    return <div style={{ color: '#566273' }}>no buildings yet</div>;
+  }
+
+  return (
+    <>
+      {rows.map(({ b, entries }) => (
+        <div key={b.id} style={ROW}>
+          <span style={{ width: 110, color: '#aab4c2' }}>
+            {b.type}#{b.id}
+          </span>
+          <span style={{ whiteSpace: 'normal', color: '#566273' }}>
+            {entries.map((e, i) => (
+              <span key={e.demandId}>
+                {i > 0 && ' · '}
+                {e.demandId}{' '}
+                <span style={{ color: e.filled < e.cap ? '#e3c364' : '#86d99a' }}>
+                  {e.filled}/{e.cap}
+                </span>
+              </span>
+            ))}
+          </span>
         </div>
       ))}
     </>

@@ -4,7 +4,7 @@ import { useWorldStore } from '@game/store/worldStore';
 import type { DemandMap } from '@game/demand/maps';
 
 // Single sprite covering the world bounds, textured by the active demand map's
-// cell data through its palette. Linear-filtered so blob edges look smooth.
+// cell data through its palette. Nearest-filtered so cells stay crisp.
 export class CellMapLayer {
   readonly container = new Container();
   private sprite: Sprite | null = null;
@@ -52,7 +52,7 @@ export class CellMapLayer {
       resource: rgba,
       width: cellMap.cols,
       height: cellMap.rows,
-      scaleMode: 'linear',
+      scaleMode: 'nearest',
     });
     const texture = new Texture({ source });
     const sprite = new Sprite(texture);

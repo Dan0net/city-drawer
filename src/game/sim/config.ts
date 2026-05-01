@@ -6,10 +6,9 @@
 export const SPAWN_INTERVAL_MIN = 0.4;
 export const SPAWN_INTERVAL_MAX = 0.8;
 
-// World grid for cell-sourced demand maps. 4096 m world, ~16 m/cell.
-const WORLD_SIZE = 4096;
+const WORLD_SIZE = 5000;
 export const WORLD_MIN = -WORLD_SIZE / 2;
-export const GRID_RES = 256;
+export const GRID_RES = 250;
 export const CELL_SIZE = WORLD_SIZE / GRID_RES;
 
 // Disc radius around each road node when integrating cell values into the
@@ -19,7 +18,7 @@ export const CELL_SAMPLE_RADIUS = CELL_SIZE * 3;
 // broadcasting (building-sourced demands).
 export const SOURCE_ANCHOR_RADIUS = CELL_SIZE * 6;
 // Radius used when splatting a node-field back onto cells for visualization.
-export const FIELD_SPLAT_RADIUS = CELL_SIZE * 3;
+export const FIELD_SPLAT_RADIUS = CELL_SIZE * 6;
 
 // Sink → source attribution: starting graph-distance radius when locating
 // sources to fill. Used by both the attribution step and the pre-spawn
