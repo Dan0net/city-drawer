@@ -1,9 +1,9 @@
 import { Container, Graphics } from 'pixi.js';
-import type { Graph, NodeId } from '@game/graph';
-import { bfsPath } from '@game/graph/path';
+import type { Graph } from '@game/graph';
 import type { Building, BuildingId } from '@game/buildings';
-import type { AttributionLedger, AttributionLedgers } from '@game/sim/attribution';
+import type { AttributionLedger, AttributionLedgers, Link } from '@game/sim/attribution';
 import { DEMAND_TYPES, type DemandDef, type DemandId } from '@game/demand/types';
+import { ATTRIBUTION_NEAREST_RADIUS } from '@game/sim/config';
 import { useWorldStore } from '@game/store/worldStore';
 
 const STROKE_WIDTH = 1.6;
@@ -43,11 +43,11 @@ export interface RoutesResult {
   dots: RouteDot[];
 }
 
-// Highlights ledger links touching the hovered building. Polyline +
-// arrowhead + start-dot draw here in Pixi; slot-count labels are produced
-// for HoverRouteLabels (DOM-rendered for crisp text). Routes connect
-// centroid → road-front-point → ...graph... → road-front-point → centroid.
-// `def.flipArrow` reverses the visual direction (jobs).
+// Highlights ledger links touching the hovered building. Polylines come
+// straight from each Link's stored `edges` — the same path the attribution
+// fill helpers walked, so hover viz matches actual flow exactly. Pixi draws
+// stroke + arrowhead + start-dot; slot labels render in the DOM via
+// HoverRouteLabels for crisp text. `def.flipArrow` reverses direction.
 export class HoverRoutesLayer {
   readonly container = new Container();
   private g = new Graphics();
@@ -90,7 +90,6 @@ interface LabelAcc {
   sumDirY: number;
 }
 
-// Public — also consumed by HoverRouteLabels in the UI layer.
 export function computeRoutes(
   target: Building,
   graph: Graph,
@@ -169,15 +168,18 @@ function collectLinks(
 ): void {
   const links = role === 'sink' ? ledger.bySink.get(target.id) : ledger.bySource.get(target.id);
   if (!links || links.size === 0) return;
-  for (const [otherId, slots] of links) {
-    const other = buildings.find((b) => b.id === otherId);
-    if (!other) continue;
-    const dataSink = role === 'sink' ? target : other;
-    const dataSource = role === 'sink' ? other : target;
+  for (const link of links.values()) {
+    const dataSourceId = link.sourceId;
+    const dataSinkId = link.sinkId;
+    const dataSource = buildings.find((b) => b.id === dataSourceId);
+    const dataSink = buildings.find((b) => b.id === dataSinkId);
+    if (!dataSource || !dataSink) continue;
+    let pts = polylineFromLink(graph, dataSource, dataSink, link);
+    if (!pts || pts.length < 4) continue;
+    if (def.flipArrow) pts = reversePts(pts);
+
     const visualSource = def.flipArrow ? dataSink : dataSource;
     const visualSink = def.flipArrow ? dataSource : dataSink;
-    const pts = routePoints(graph, visualSource, visualSink);
-    if (!pts || pts.length < 4) continue;
     const n = pts.length;
     const tipDx = pts[n - 2] - pts[n - 4];
     const tipDy = pts[n - 1] - pts[n - 3];
@@ -187,13 +189,12 @@ function collectLinks(
     const startDx = pts[2] - pts[0];
     const startDy = pts[3] - pts[1];
     const startLen = Math.hypot(startDx, startDy) || 1;
-    // Outward direction at the start: opposite of where the line is heading.
     const sOutX = -startDx / startLen;
     const sOutY = -startDy / startLen;
 
     strokes.push({ pts, color, tipX: pts[n - 2], tipY: pts[n - 1], ux, uy });
-    addLabel(visualSource.id, def.id, 's', visualSource.centroid.x, visualSource.centroid.y, sOutX, sOutY, color, slots);
-    addLabel(visualSink.id, def.id, 'e', visualSink.centroid.x, visualSink.centroid.y, ux, uy, color, slots);
+    addLabel(visualSource.id, def.id, 's', visualSource.centroid.x, visualSource.centroid.y, sOutX, sOutY, color, link.slots);
+    addLabel(visualSink.id, def.id, 'e', visualSink.centroid.x, visualSink.centroid.y, ux, uy, color, link.slots);
 
     const dotKey = `${visualSource.id}:${def.id}`;
     if (!dotMap.has(dotKey)) {
@@ -204,11 +205,9 @@ function collectLinks(
 
 interface FrontEdge {
   pt: { x: number; y: number };
-  edgeId: number;
-  fromId: NodeId;
-  toId: NodeId;
 }
 
+// Centerline midpoint of the building's primary frontage interval.
 function frontEdge(graph: Graph, b: Building): FrontEdge | null {
   const c = b.consumed[0];
   if (!c) return null;
@@ -218,39 +217,46 @@ function frontEdge(graph: Graph, b: Building): FrontEdge | null {
   const z = graph.nodes.get(e.to);
   if (!a || !z) return null;
   const t = (c.t0 + c.t1) * 0.5;
-  return {
-    pt: { x: a.x + (z.x - a.x) * t, y: a.y + (z.y - a.y) * t },
-    edgeId: e.id,
-    fromId: e.from,
-    toId: e.to,
-  };
+  return { pt: { x: a.x + (z.x - a.x) * t, y: a.y + (z.y - a.y) * t } };
 }
 
-function pickExitNode(from: FrontEdge, target: { x: number; y: number }, graph: Graph): NodeId {
-  const a = graph.nodes.get(from.fromId)!;
-  const z = graph.nodes.get(from.toId)!;
-  const da = (a.x - target.x) ** 2 + (a.y - target.y) ** 2;
-  const dz = (z.x - target.x) ** 2 + (z.y - target.y) ** 2;
-  return da <= dz ? from.fromId : from.toId;
-}
-
-function routePoints(graph: Graph, source: Building, sink: Building): number[] | null {
+// Reconstruct polyline data-direction (source.centroid → sink.centroid)
+// using the link's stored edge sequence. Matches the path the attribution
+// helpers walked.
+function polylineFromLink(
+  graph: Graph,
+  source: Building,
+  sink: Building,
+  link: Link,
+): number[] | null {
   const sf = frontEdge(graph, source);
   const tf = frontEdge(graph, sink);
   if (!sf || !tf) return null;
+  const startNode = graph.nearestNode(source.centroid.x, source.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
+  if (!startNode) return null;
+
   const pts: number[] = [source.centroid.x, source.centroid.y, sf.pt.x, sf.pt.y];
-  if (sf.edgeId !== tf.edgeId) {
-    const exitId = pickExitNode(sf, tf.pt, graph);
-    const entryId = pickExitNode(tf, sf.pt, graph);
-    const path = bfsPath(graph, exitId, entryId);
-    if (path.length === 0) return null;
-    for (const id of path) {
-      const n = graph.nodes.get(id);
-      if (n) pts.push(n.x, n.y);
-    }
+  let cur = startNode.id;
+  pts.push(startNode.x, startNode.y);
+  for (const eid of link.edges) {
+    const e = graph.edges.get(eid);
+    if (!e) return null; // path crosses a deleted edge — skip viz
+    cur = e.from === cur ? e.to : e.from;
+    const node = graph.nodes.get(cur);
+    if (!node) return null;
+    pts.push(node.x, node.y);
   }
   pts.push(tf.pt.x, tf.pt.y, sink.centroid.x, sink.centroid.y);
   return pts;
+}
+
+function reversePts(pts: number[]): number[] {
+  const out = new Array(pts.length);
+  for (let i = 0; i < pts.length; i += 2) {
+    out[pts.length - 2 - i] = pts[i];
+    out[pts.length - 1 - i] = pts[i + 1];
+  }
+  return out;
 }
 
 function paletteColor(def: DemandDef): number {

@@ -14,7 +14,16 @@ import {
 } from '@game/drawing/pointer';
 import type { SnapResult } from '@game/drawing/snap';
 import { createDemandMaps, type DemandMap } from '@game/demand/maps';
-import { createAttributionLedgers, type AttributionLedgers } from '@game/sim/attribution';
+import {
+  createAttributionLedgers,
+  createTraffic,
+  dropLinksThroughEdges,
+  resetLedger,
+  resetTraffic,
+  settleAfterDrop,
+  type AttributionLedgers,
+  type TrafficState,
+} from '@game/sim/attribution';
 import { createSpawnEngine } from '@game/sim/spawn';
 import { useDebugStore } from '@game/store/debugStore';
 
@@ -50,6 +59,10 @@ interface WorldState {
   // slots; mutated by attribution helpers, read by maps, picker, hover.
   attributions: AttributionLedgers;
   attributionsVersion: number;
+  // Traffic accumulator — slots × pathLen credited per edge during attribution.
+  // Mutated alongside the ledger; renderer reads via trafficVersion.
+  traffic: TrafficState;
+  trafficVersion: number;
 
   setTool(t: Tool): void;
   toggleTool(t: Exclude<Tool, 'none'>): void;
@@ -79,6 +92,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
   const failedAttempts: FailedAttempt[] = [];
   const demandMaps = createDemandMaps(1337);
   const attributions = createAttributionLedgers();
+  const traffic = createTraffic();
   const spawn = createSpawnEngine({
     onEvent: (e) => useDebugStore.getState().push(e),
   });
@@ -105,6 +119,8 @@ export const useWorldStore = create<WorldState>((set, get) => {
     demandMapsVersion: 0,
     attributions,
     attributionsVersion: 0,
+    traffic,
+    trafficVersion: 0,
 
     setTool: (t) => set({ tool: t, ...idleDrawingState }),
 
@@ -145,20 +161,23 @@ export const useWorldStore = create<WorldState>((set, get) => {
     cancelDraw: () => set({ ...idleDrawingState }),
 
     removeAtPointer: () => {
-      const { graph: g, bulldozeHover, buildings: bs, attributions: ledgers } = get();
+      const s0 = get();
+      const { graph: g, bulldozeHover, buildings: bs, attributions: ledgers, traffic: t } = s0;
       if (!bulldozeHover) return;
       if (bulldozeHover.kind === 'building') {
-        const bumpGraph = removeBuildingRestoring(g, bs, ledgers, bulldozeHover.id, null);
+        const bumpGraph = removeBuildingRestoring(g, bs, ledgers, t, bulldozeHover.id, null);
         set({
           buildingsVersion: get().buildingsVersion + 1,
           attributionsVersion: get().attributionsVersion + 1,
+          trafficVersion: get().trafficVersion + 1,
           bulldozeHover: null,
           ...(bumpGraph ? { graphVersion: g.version } : {}),
         });
         return;
       }
-      // Edge or node removal — collect the affected edges, bulldoze any
-      // building whose primary face sits on one of them, then drop the edge/node.
+      // Edge or node removal. Order: delete from graph first so all
+      // subsequent BFSes (re-attribution) route around the dead edges; then
+      // drop ledger links sitting on those edges and re-fill counterparties.
       const affected = new Set<EdgeId>();
       if (bulldozeHover.kind === 'edge') {
         affected.add(bulldozeHover.id);
@@ -166,29 +185,30 @@ export const useWorldStore = create<WorldState>((set, get) => {
         const node = g.nodes.get(bulldozeHover.id);
         if (node) for (const eid of node.edges) affected.add(eid);
       }
+      if (bulldozeHover.kind === 'edge') g.removeEdge(bulldozeHover.id);
+      else g.removeNode(bulldozeHover.id);
       let bumpBuildings = false;
       for (let i = bs.length - 1; i >= 0; i--) {
         const primaryEdge = bs[i].consumed[0]?.edgeId;
         if (primaryEdge != null && affected.has(primaryEdge)) {
-          removeBuildingRestoring(g, bs, ledgers, bs[i].id, affected);
+          removeBuildingRestoring(g, bs, ledgers, t, bs[i].id, affected);
           bumpBuildings = true;
         }
       }
-      if (bulldozeHover.kind === 'edge') g.removeEdge(bulldozeHover.id);
-      else g.removeNode(bulldozeHover.id);
+      const dropped = dropLinksThroughEdges(ledgers, affected, t);
+      settleAfterDrop(dropped, { graph: g, buildings: bs, ledgers, traffic: t });
       const patch: Partial<WorldState> = {
         graphVersion: g.version,
+        attributionsVersion: get().attributionsVersion + 1,
+        trafficVersion: get().trafficVersion + 1,
         bulldozeHover: null,
       };
-      if (bumpBuildings) {
-        patch.buildingsVersion = get().buildingsVersion + 1;
-        patch.attributionsVersion = get().attributionsVersion + 1;
-      }
+      if (bumpBuildings) patch.buildingsVersion = get().buildingsVersion + 1;
       set(patch);
     },
 
     clearBuildings: () => {
-      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers, traffic: t } = get();
       if (bs.length === 0 && fa.length === 0) return;
       let bumpGraph = false;
       for (const b of bs) {
@@ -198,35 +218,31 @@ export const useWorldStore = create<WorldState>((set, get) => {
       }
       bs.length = 0;
       fa.length = 0;
-      for (const led of ledgers.values()) {
-        led.bySink.clear();
-        led.bySource.clear();
-        led.totalSlots = 0;
-      }
+      for (const led of ledgers.values()) resetLedger(led);
+      resetTraffic(t);
       set({
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
         attributionsVersion: get().attributionsVersion + 1,
+        trafficVersion: get().trafficVersion + 1,
         bulldozeHover: null,
         ...(bumpGraph ? { graphVersion: g.version } : {}),
       });
     },
 
     clearAll: () => {
-      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers } = get();
+      const { graph: g, buildings: bs, failedAttempts: fa, attributions: ledgers, traffic: t } = get();
       g.clear();
       bs.length = 0;
       fa.length = 0;
-      for (const led of ledgers.values()) {
-        led.bySink.clear();
-        led.bySource.clear();
-        led.totalSlots = 0;
-      }
+      for (const led of ledgers.values()) resetLedger(led);
+      resetTraffic(t);
       set({
         graphVersion: g.version,
         buildingsVersion: get().buildingsVersion + 1,
         failedAttemptsVersion: get().failedAttemptsVersion + 1,
         attributionsVersion: get().attributionsVersion + 1,
+        trafficVersion: get().trafficVersion + 1,
         ...idleDrawingState,
       });
     },
@@ -242,6 +258,7 @@ export const useWorldStore = create<WorldState>((set, get) => {
           failedAttempts: s.failedAttempts,
           demandMaps: s.demandMaps,
           ledgers: s.attributions,
+          traffic: s.traffic,
         },
         newSimTime,
         Math.random,
@@ -250,7 +267,10 @@ export const useWorldStore = create<WorldState>((set, get) => {
       if (r.buildingsChanged) patch.buildingsVersion = s.buildingsVersion + 1;
       if (r.failedChanged) patch.failedAttemptsVersion = s.failedAttemptsVersion + 1;
       if (r.graphChanged) patch.graphVersion = s.graph.version;
-      if (r.attributionsChanged) patch.attributionsVersion = s.attributionsVersion + 1;
+      if (r.attributionsChanged) {
+        patch.attributionsVersion = s.attributionsVersion + 1;
+        patch.trafficVersion = s.trafficVersion + 1;
+      }
       set(patch);
     },
 

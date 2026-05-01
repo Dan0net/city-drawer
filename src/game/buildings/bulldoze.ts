@@ -7,6 +7,7 @@ import {
   dropFromLedgers,
   settleAfterDrop,
   type AttributionLedgers,
+  type TrafficState,
 } from '@game/sim/attribution';
 
 export const buildingAtPoint = (buildings: Building[], x: number, y: number): Building | null => {
@@ -54,15 +55,16 @@ export const buildingsWithPrimaryOn = (
 };
 
 // Removes a single building, restoring its consumed frontages on every edge
-// other than `excludeEdgeIds` (which we're about to delete). Drops the
-// building's ledger entries in both directions, then re-runs the fill helpers
-// on each surviving counterparty so freed slack / lost attributions migrate
-// to the next-closest neighbor. Returns true if any frontage was actually
-// restored.
+// other than `excludeEdgeIds` (which are about to be deleted). Drops the
+// building's ledger entries (subtracting traffic along stored paths) and
+// re-runs the fill helpers on each surviving counterparty so freed slack /
+// lost attributions migrate to the next-closest neighbor. Returns true if
+// any frontage was actually restored.
 export const removeBuildingRestoring = (
   graph: Graph,
   buildings: Building[],
   ledgers: AttributionLedgers,
+  traffic: TrafficState,
   buildingId: BuildingId,
   excludeEdgeIds: Set<EdgeId> | null,
 ): boolean => {
@@ -70,8 +72,8 @@ export const removeBuildingRestoring = (
   if (idx < 0) return false;
   const b = buildings[idx];
   buildings.splice(idx, 1);
-  const dropped = dropFromLedgers(ledgers, buildingId);
-  settleAfterDrop(dropped, { graph, buildings, ledgers });
+  const dropped = dropFromLedgers(ledgers, buildingId, traffic);
+  settleAfterDrop(dropped, { graph, buildings, ledgers, traffic });
   let restored = false;
   for (const c of b.consumed) {
     if (excludeEdgeIds && excludeEdgeIds.has(c.edgeId)) continue;

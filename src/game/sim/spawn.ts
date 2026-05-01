@@ -9,6 +9,7 @@ import {
   sinkSlotDemand,
   slotsClaimedBy,
   type AttributionLedgers,
+  type TrafficState,
 } from './attribution';
 import { failedAttemptLifetime } from './animation';
 import { SPAWN_INTERVAL_MIN, SPAWN_INTERVAL_MAX } from './config';
@@ -19,6 +20,7 @@ interface SpawnCtx {
   failedAttempts: FailedAttempt[];
   demandMaps: DemandMap[];
   ledgers: AttributionLedgers;
+  traffic: TrafficState;
 }
 
 interface SpawnTickResult {
@@ -161,7 +163,12 @@ function runSpawnAttempt(
   }
   result.buildingsChanged = true;
 
-  settleNewBuilding(b, { graph: ctx.graph, buildings: ctx.buildings, ledgers: ctx.ledgers });
+  settleNewBuilding(b, {
+    graph: ctx.graph,
+    buildings: ctx.buildings,
+    ledgers: ctx.ledgers,
+    traffic: ctx.traffic,
+  });
   result.attributionsChanged = true;
 
   reportSuccess(onEvent, simTime, b, def, ctx.ledgers);

@@ -1,61 +1,67 @@
-import type { Graph, NodeId } from '@game/graph';
+import type { EdgeId, Graph, NodeId } from '@game/graph';
+import { bfsParents, pathEdgesFromParents, type BfsParent } from '@game/graph/path';
 import type { Building, BuildingId } from '@game/buildings';
 import { DEMAND_TYPES, type DemandDef, type DemandId } from '@game/demand/types';
 import { ATTRIBUTION_NEAREST_RADIUS } from '@game/sim/config';
 
-// Per-demand bidirectional attribution map. Source of truth for who is
-// connected to whom and how many slots flow on that edge. `Building.filled`
-// no longer exists — read source slack via `slotsGivenBy` and global filled
-// via `totalSlots`.
+export interface Link {
+  sourceId: BuildingId;
+  sinkId: BuildingId;
+  slots: number;
+  // Path used at attribution time, source-anchor → sink-anchor. Stored so
+  // we can subtract traffic on drop and reroute when an edge is bulldozed.
+  edges: EdgeId[];
+}
+
 export interface AttributionLedger {
-  bySink: Map<BuildingId, Map<BuildingId, number>>;
-  bySource: Map<BuildingId, Map<BuildingId, number>>;
+  bySink: Map<BuildingId, Map<BuildingId, Link>>;
+  bySource: Map<BuildingId, Map<BuildingId, Link>>;
   totalSlots: number;
+  // Reverse index: every Link is registered against each edge in its path,
+  // so dropLinksThroughEdges is O(deadEdges + affectedLinks) instead of
+  // O(allLinks × pathLength).
+  edgeIndex: Map<EdgeId, Set<Link>>;
 }
 
 export type AttributionLedgers = Map<DemandId, AttributionLedger>;
 
+export interface TrafficState {
+  perEdge: Map<EdgeId, number>;
+  max: number;
+}
+
+export const createTraffic = (): TrafficState => ({ perEdge: new Map(), max: 0 });
+
+export const resetTraffic = (t: TrafficState): void => {
+  t.perEdge.clear();
+  t.max = 0;
+};
+
 export function createAttributionLedgers(): AttributionLedgers {
   const m: AttributionLedgers = new Map();
   for (const def of DEMAND_TYPES) {
-    m.set(def.id, { bySink: new Map(), bySource: new Map(), totalSlots: 0 });
+    m.set(def.id, {
+      bySink: new Map(),
+      bySource: new Map(),
+      totalSlots: 0,
+      edgeIndex: new Map(),
+    });
   }
   return m;
 }
 
-const bump = (m: Map<BuildingId, Map<BuildingId, number>>, k: BuildingId, k2: BuildingId, d: number): void => {
-  let inner = m.get(k);
-  if (!inner) {
-    if (d <= 0) return;
-    inner = new Map();
-    m.set(k, inner);
-  }
-  const next = (inner.get(k2) ?? 0) + d;
-  if (next <= 0) {
-    inner.delete(k2);
-    if (inner.size === 0) m.delete(k);
-  } else {
-    inner.set(k2, next);
-  }
-};
-
-const addAttribution = (
-  ledger: AttributionLedger,
-  sinkId: BuildingId,
-  sourceId: BuildingId,
-  slots: number,
-): void => {
-  if (slots <= 0) return;
-  bump(ledger.bySink, sinkId, sourceId, slots);
-  bump(ledger.bySource, sourceId, sinkId, slots);
-  ledger.totalSlots += slots;
+export const resetLedger = (l: AttributionLedger): void => {
+  l.bySink.clear();
+  l.bySource.clear();
+  l.edgeIndex.clear();
+  l.totalSlots = 0;
 };
 
 export const slotsGivenBy = (ledger: AttributionLedger, sourceId: BuildingId): number => {
   const inner = ledger.bySource.get(sourceId);
   if (!inner) return 0;
   let s = 0;
-  for (const v of inner.values()) s += v;
+  for (const link of inner.values()) s += link.slots;
   return s;
 };
 
@@ -63,98 +69,212 @@ export const slotsClaimedBy = (ledger: AttributionLedger, sinkId: BuildingId): n
   const inner = ledger.bySink.get(sinkId);
   if (!inner) return 0;
   let s = 0;
-  for (const v of inner.values()) s += v;
+  for (const link of inner.values()) s += link.slots;
   return s;
 };
 
-// Total slots a sink wants for a demand, independent of how many sources
-// supply it. Clamped ≥ 1 so tiny post-shrink sinks still demand something.
+// Total slots a sink wants for a demand, independent of source count.
 export const sinkSlotDemand = (sink: Building, def: DemandDef): number => {
   const unit = def.unitArea ?? 1;
   const mult = def.sink.consumption ?? 1;
   return Math.max(1, Math.floor(sink.area / unit)) * mult;
 };
 
-// Drop every ledger entry that touches `id` (in either role) and return the
-// list of counterparties whose links were just removed, so callers can run
-// fill helpers on them. Pure subtraction; no fill or rebalance happens here.
+const creditTraffic = (traffic: TrafficState, edges: EdgeId[], slots: number): void => {
+  for (const e of edges) {
+    const next = (traffic.perEdge.get(e) ?? 0) + slots;
+    traffic.perEdge.set(e, next);
+    if (next > traffic.max) traffic.max = next;
+  }
+};
+
+const debitTraffic = (traffic: TrafficState, edges: EdgeId[], slots: number): boolean => {
+  let touchedMax = false;
+  for (const e of edges) {
+    const cur = traffic.perEdge.get(e) ?? 0;
+    const next = cur - slots;
+    if (cur >= traffic.max) touchedMax = true;
+    if (next <= 0) traffic.perEdge.delete(e);
+    else traffic.perEdge.set(e, next);
+  }
+  return touchedMax;
+};
+
+const recomputeTrafficMax = (traffic: TrafficState): void => {
+  let m = 0;
+  for (const v of traffic.perEdge.values()) if (v > m) m = v;
+  traffic.max = m;
+};
+
+const indexLink = (ledger: AttributionLedger, link: Link): void => {
+  for (const e of link.edges) {
+    let set = ledger.edgeIndex.get(e);
+    if (!set) {
+      set = new Set();
+      ledger.edgeIndex.set(e, set);
+    }
+    set.add(link);
+  }
+};
+
+const unindexLink = (ledger: AttributionLedger, link: Link): void => {
+  for (const e of link.edges) {
+    const set = ledger.edgeIndex.get(e);
+    if (!set) continue;
+    set.delete(link);
+    if (set.size === 0) ledger.edgeIndex.delete(e);
+  }
+};
+
+// Single chokepoint for tearing a link out of every collection that holds it,
+// debiting traffic, and bookkeeping totalSlots / max. Both bulldoze paths
+// (per-building, per-edge) call this — no duplicated cleanup logic.
+const removeLink = (
+  ledger: AttributionLedger,
+  link: Link,
+  traffic: TrafficState,
+): { wasMaxTouched: boolean } => {
+  const wasMaxTouched = debitTraffic(traffic, link.edges, link.slots);
+  const sinkInner = ledger.bySink.get(link.sinkId);
+  if (sinkInner) {
+    sinkInner.delete(link.sourceId);
+    if (sinkInner.size === 0) ledger.bySink.delete(link.sinkId);
+  }
+  const srcInner = ledger.bySource.get(link.sourceId);
+  if (srcInner) {
+    srcInner.delete(link.sinkId);
+    if (srcInner.size === 0) ledger.bySource.delete(link.sourceId);
+  }
+  unindexLink(ledger, link);
+  ledger.totalSlots -= link.slots;
+  return { wasMaxTouched };
+};
+
+const getOrCreateInner = <K, V>(m: Map<K, Map<K, V>>, k: K): Map<K, V> => {
+  let inner = m.get(k);
+  if (!inner) {
+    inner = new Map();
+    m.set(k, inner);
+  }
+  return inner;
+};
+
+// Add `slots` from sourceId to sinkId. New pair → store path + index by edge.
+// Existing pair → bump slots, traffic credits along the original path; the
+// freshly-walked `edges` arg is ignored. Keeping the original path means a
+// link's recorded route stays valid until its edges are explicitly dropped
+// (via building or edge bulldoze), at which point the link goes too.
+const addAttribution = (
+  ledger: AttributionLedger,
+  sinkId: BuildingId,
+  sourceId: BuildingId,
+  slots: number,
+  edges: EdgeId[],
+  traffic: TrafficState,
+): void => {
+  if (slots <= 0) return;
+  const sinkInner = getOrCreateInner(ledger.bySink, sinkId);
+  const existing = sinkInner.get(sourceId);
+  if (existing) {
+    existing.slots += slots;
+    creditTraffic(traffic, existing.edges, slots);
+  } else {
+    const link: Link = { sourceId, sinkId, slots, edges };
+    sinkInner.set(sourceId, link);
+    getOrCreateInner(ledger.bySource, sourceId).set(sinkId, link);
+    indexLink(ledger, link);
+    creditTraffic(traffic, edges, slots);
+  }
+  ledger.totalSlots += slots;
+};
+
 export interface DroppedLinks {
-  // Demands where this id had been a sink → list of source ids whose slack just grew.
   asSink: Map<DemandId, BuildingId[]>;
-  // Demands where this id had been a source → list of sink ids that just lost slots.
   asSource: Map<DemandId, BuildingId[]>;
 }
 
+const emptyDropped = (): DroppedLinks => ({ asSink: new Map(), asSource: new Map() });
+
+const recordCounterparty = (
+  out: Map<DemandId, BuildingId[]>,
+  demandId: DemandId,
+  id: BuildingId,
+): void => {
+  let list = out.get(demandId);
+  if (!list) {
+    list = [];
+    out.set(demandId, list);
+  }
+  list.push(id);
+};
+
+// Drop every link touching `id` (in either role). Returns counterparties so
+// `settleAfterDrop` can refill them.
 export function dropFromLedgers(
   ledgers: AttributionLedgers,
   id: BuildingId,
+  traffic: TrafficState,
 ): DroppedLinks {
-  const asSink = new Map<DemandId, BuildingId[]>();
-  const asSource = new Map<DemandId, BuildingId[]>();
+  const dropped = emptyDropped();
+  let touchedMax = false;
   for (const [demandId, ledger] of ledgers) {
-    const sinkLinks = ledger.bySink.get(id);
-    if (sinkLinks && sinkLinks.size > 0) {
-      const sources: BuildingId[] = [];
-      for (const [sourceId, slots] of sinkLinks) {
-        sources.push(sourceId);
-        ledger.totalSlots -= slots;
-        const inv = ledger.bySource.get(sourceId);
-        if (inv) {
-          inv.delete(id);
-          if (inv.size === 0) ledger.bySource.delete(sourceId);
-        }
+    const sinkInner = ledger.bySink.get(id);
+    if (sinkInner) {
+      // Snapshot — removeLink mutates the inner map.
+      const links = [...sinkInner.values()];
+      for (const link of links) {
+        recordCounterparty(dropped.asSink, demandId, link.sourceId);
+        if (removeLink(ledger, link, traffic).wasMaxTouched) touchedMax = true;
       }
-      ledger.bySink.delete(id);
-      asSink.set(demandId, sources);
     }
-    const sourceLinks = ledger.bySource.get(id);
-    if (sourceLinks && sourceLinks.size > 0) {
-      const sinks: BuildingId[] = [];
-      for (const [sinkId, slots] of sourceLinks) {
-        sinks.push(sinkId);
-        ledger.totalSlots -= slots;
-        const inv = ledger.bySink.get(sinkId);
-        if (inv) {
-          inv.delete(id);
-          if (inv.size === 0) ledger.bySink.delete(sinkId);
-        }
+    const srcInner = ledger.bySource.get(id);
+    if (srcInner) {
+      const links = [...srcInner.values()];
+      for (const link of links) {
+        recordCounterparty(dropped.asSource, demandId, link.sinkId);
+        if (removeLink(ledger, link, traffic).wasMaxTouched) touchedMax = true;
       }
-      ledger.bySource.delete(id);
-      asSource.set(demandId, sinks);
     }
   }
-  return { asSink, asSource };
+  if (touchedMax) recomputeTrafficMax(traffic);
+  return dropped;
 }
 
-// Walk the graph BFS by hop count from `startNodeId`, calling `visit` on each
-// reached node. Stops when `visit` returns true. Single canonical pattern;
-// callers wrap their per-node logic in the closure.
-function bfsHops(graph: Graph, startNodeId: NodeId, visit: (n: NodeId) => boolean): void {
-  const visited = new Set<NodeId>([startNodeId]);
-  const queue: NodeId[] = [startNodeId];
-  while (queue.length > 0) {
-    const n = queue.shift()!;
-    if (visit(n)) return;
-    const node = graph.nodes.get(n);
-    if (!node) continue;
-    for (const eid of node.edges) {
-      const e = graph.edges.get(eid);
-      if (!e) continue;
-      const other = e.from === n ? e.to : e.from;
-      if (visited.has(other)) continue;
-      visited.add(other);
-      queue.push(other);
+// Drop every link whose path crosses any edge in `deadEdges`. Used by the
+// edge / node bulldoze flow to invalidate stale attributions and let
+// settleAfterDrop reroute their counterparties on the new graph.
+export function dropLinksThroughEdges(
+  ledgers: AttributionLedgers,
+  deadEdges: ReadonlySet<EdgeId>,
+  traffic: TrafficState,
+): DroppedLinks {
+  const dropped = emptyDropped();
+  let touchedMax = false;
+  for (const [demandId, ledger] of ledgers) {
+    // Snapshot affected links first — removeLink mutates edgeIndex.
+    const affected = new Set<Link>();
+    for (const e of deadEdges) {
+      const set = ledger.edgeIndex.get(e);
+      if (!set) continue;
+      for (const link of set) affected.add(link);
+    }
+    for (const link of affected) {
+      recordCounterparty(dropped.asSink, demandId, link.sourceId);
+      recordCounterparty(dropped.asSource, demandId, link.sinkId);
+      if (removeLink(ledger, link, traffic).wasMaxTouched) touchedMax = true;
     }
   }
+  if (touchedMax) recomputeTrafficMax(traffic);
+  return dropped;
 }
 
 interface FillCtx {
   graph: Graph;
   buildings: Building[];
   ledgers: AttributionLedgers;
+  traffic: TrafficState;
 }
 
-// Anchor a building's nearest road node, bucketing other buildings by node id.
 const bucketByNearestNode = (
   graph: Graph,
   buildings: Building[],
@@ -172,7 +292,33 @@ const bucketByNearestNode = (
   return buckets;
 };
 
-// Pull slots into `sinkId` from closest source-with-slack, hop-by-hop, until
+// Walk `parents` (a BFS map) in hop-count order — same order BFS itself
+// would visit them. Stops when `visit` returns true.
+const walkBfsLayers = (
+  parents: Map<NodeId, BfsParent>,
+  start: NodeId,
+  graph: Graph,
+  visit: (n: NodeId) => boolean,
+): void => {
+  const visited = new Set<NodeId>([start]);
+  const queue: NodeId[] = [start];
+  while (queue.length > 0) {
+    const n = queue.shift()!;
+    if (visit(n)) return;
+    const node = graph.nodes.get(n);
+    if (!node) continue;
+    for (const eid of node.edges) {
+      const e = graph.edges.get(eid);
+      if (!e) continue;
+      const other = e.from === n ? e.to : e.from;
+      if (visited.has(other) || !parents.has(other)) continue;
+      visited.add(other);
+      queue.push(other);
+    }
+  }
+};
+
+// Pull slots into `sinkId` from closest sources-with-slack, hop-by-hop, until
 // the sink's demand is satisfied OR the graph is exhausted. Partial fill OK.
 export function fillFromNewSink(sinkId: BuildingId, def: DemandDef, ctx: FillCtx): void {
   if (def.source.kind !== 'building') return;
@@ -191,7 +337,8 @@ export function fillFromNewSink(sinkId: BuildingId, def: DemandDef, ctx: FillCtx
     (b) => b.type === sourceType && capacity - slotsGivenBy(ledger, b.id) > 0,
   );
   if (buckets.size === 0) return;
-  bfsHops(ctx.graph, start.id, (n) => {
+  const parents = bfsParents(ctx.graph, start.id);
+  walkBfsLayers(parents, start.id, ctx.graph, (n) => {
     const list = buckets.get(n);
     if (!list) return false;
     for (const src of list) {
@@ -199,7 +346,12 @@ export function fillFromNewSink(sinkId: BuildingId, def: DemandDef, ctx: FillCtx
       const slack = capacity - slotsGivenBy(ledger, src.id);
       if (slack <= 0) continue;
       const give = Math.min(slack, remaining);
-      addAttribution(ledger, sinkId, src.id, give);
+      const sourceAnchor = ctx.graph.nearestNode(src.centroid.x, src.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
+      if (!sourceAnchor) continue;
+      // Path runs source→sink; parents map was built from sink, so reverse.
+      const sinkToSource = pathEdgesFromParents(parents, sourceAnchor.id);
+      const edges = sinkToSource.slice().reverse();
+      addAttribution(ledger, sinkId, src.id, give, edges, ctx.traffic);
       remaining -= give;
     }
     return remaining <= 0;
@@ -225,7 +377,8 @@ export function fillFromNewSource(sourceId: BuildingId, def: DemandDef, ctx: Fil
     (b) => b.type === sinkType && sinkSlotDemand(b, def) - slotsClaimedBy(ledger, b.id) > 0,
   );
   if (buckets.size === 0) return;
-  bfsHops(ctx.graph, start.id, (n) => {
+  const parents = bfsParents(ctx.graph, start.id);
+  walkBfsLayers(parents, start.id, ctx.graph, (n) => {
     const list = buckets.get(n);
     if (!list) return false;
     for (const sink of list) {
@@ -233,15 +386,16 @@ export function fillFromNewSource(sourceId: BuildingId, def: DemandDef, ctx: Fil
       const need = sinkSlotDemand(sink, def) - slotsClaimedBy(ledger, sink.id);
       if (need <= 0) continue;
       const give = Math.min(slack, need);
-      addAttribution(ledger, sink.id, sourceId, give);
+      const sinkAnchor = ctx.graph.nearestNode(sink.centroid.x, sink.centroid.y, ATTRIBUTION_NEAREST_RADIUS);
+      if (!sinkAnchor) continue;
+      const edges = pathEdgesFromParents(parents, sinkAnchor.id);
+      addAttribution(ledger, sink.id, sourceId, give, edges, ctx.traffic);
       slack -= give;
     }
     return slack <= 0;
   });
 }
 
-// Convenience: place a freshly-spawned building into the ledger by calling
-// the right fill helper for each demand it touches.
 export function settleNewBuilding(b: Building, ctx: FillCtx): void {
   for (const def of DEMAND_TYPES) {
     if (def.source.kind !== 'building') continue;
@@ -250,9 +404,6 @@ export function settleNewBuilding(b: Building, ctx: FillCtx): void {
   }
 }
 
-// Re-fill counterparties whose links were just dropped (sink → fillFromNewSink
-// for the sink, source → fillFromNewSource for the source). Skips ids that
-// have already been removed from `buildings`.
 export function settleAfterDrop(dropped: DroppedLinks, ctx: FillCtx): void {
   for (const [demandId, sourceIds] of dropped.asSink) {
     const def = DEMAND_TYPES.find((d) => d.id === demandId);

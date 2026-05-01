@@ -4,18 +4,36 @@ import { useWorldStore } from '@game/store/worldStore';
 const ROAD_WIDTH = 8;
 const SMALL_ROAD_WIDTH = 4;
 const PATH_WIDTH = 2;
-const ROAD_COLOR = 0x2c3038;
-const SMALL_ROAD_COLOR = 0x3a4250;
-const PATH_COLOR = 0x9a8a72;
 const BULLDOZE_COLOR = 0xe55050;
 const INSPECT_COLOR = 0xf5c542;
 
-// Draws all edges in the graph. Rebuilds only when graph.version changes.
+// Traffic ramp endpoints (RGB).
+const COLD_R = 64, COLD_G = 200, COLD_B = 80;   // green
+const HOT_R = 220, HOT_G = 50, HOT_B = 60;      // red
+
+const widthOf = (kind: 'road' | 'small_road' | 'path'): number =>
+  kind === 'road' ? ROAD_WIDTH : kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
+
+const trafficColor = (t: number, max: number): number => {
+  if (max <= 0) return rgb(COLD_R, COLD_G, COLD_B);
+  const k = Math.max(0, Math.min(1, t / max));
+  const r = Math.round(COLD_R + (HOT_R - COLD_R) * k);
+  const g = Math.round(COLD_G + (HOT_G - COLD_G) * k);
+  const b = Math.round(COLD_B + (HOT_B - COLD_B) * k);
+  return rgb(r, g, b);
+};
+
+const rgb = (r: number, g: number, b: number): number => (r << 16) | (g << 8) | b;
+
+// Draws all edges in the graph. Each edge colored by its traffic share —
+// green at zero, red at the global max. Rebuilds when graph or traffic
+// changes; redraws hover overlay independently.
 export class EdgesLayer {
   readonly container = new Container();
   private base = new Graphics();
   private hover = new Graphics();
   private lastGraphVersion = -1;
+  private lastTrafficVersion = -1;
   private lastHover: string | null = null;
 
   constructor() {
@@ -24,11 +42,14 @@ export class EdgesLayer {
     this.container.addChild(this.hover);
   }
 
-  // Called every frame from the main ticker.
   update(): void {
     const s = useWorldStore.getState();
-    if (s.graphVersion !== this.lastGraphVersion) {
+    if (
+      s.graphVersion !== this.lastGraphVersion ||
+      s.trafficVersion !== this.lastTrafficVersion
+    ) {
       this.lastGraphVersion = s.graphVersion;
+      this.lastTrafficVersion = s.trafficVersion;
       this.rebuild();
     }
     const target = s.bulldozeHover ?? s.hoverInfo;
@@ -42,50 +63,17 @@ export class EdgesLayer {
   }
 
   private rebuild(): void {
-    const { graph } = useWorldStore.getState();
+    const { graph, traffic } = useWorldStore.getState();
     this.base.clear();
-
-    // Paths first, then small roads, then roads on top so larger meets larger
-    // cleanly at junctions.
-    let drewPath = false;
     for (const e of graph.edges.values()) {
-      if (e.kind !== 'path') continue;
       const a = graph.nodes.get(e.from)!;
       const b = graph.nodes.get(e.to)!;
-      this.base.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      drewPath = true;
-    }
-    if (drewPath) {
-      this.base.stroke({ width: PATH_WIDTH, color: PATH_COLOR, alpha: 0.95, cap: 'round' });
-    }
-
-    let drewSmall = false;
-    for (const e of graph.edges.values()) {
-      if (e.kind !== 'small_road') continue;
-      const a = graph.nodes.get(e.from)!;
-      const b = graph.nodes.get(e.to)!;
-      this.base.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      drewSmall = true;
-    }
-    if (drewSmall) {
-      this.base.stroke({
-        width: SMALL_ROAD_WIDTH,
-        color: SMALL_ROAD_COLOR,
-        alpha: 1,
-        cap: 'round',
-      });
-    }
-
-    let drewRoad = false;
-    for (const e of graph.edges.values()) {
-      if (e.kind !== 'road') continue;
-      const a = graph.nodes.get(e.from)!;
-      const b = graph.nodes.get(e.to)!;
-      this.base.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      drewRoad = true;
-    }
-    if (drewRoad) {
-      this.base.stroke({ width: ROAD_WIDTH, color: ROAD_COLOR, alpha: 1, cap: 'round' });
+      const t = traffic.perEdge.get(e.id) ?? 0;
+      const color = trafficColor(t, traffic.max);
+      this.base
+        .moveTo(a.x, a.y)
+        .lineTo(b.x, b.y)
+        .stroke({ width: widthOf(e.kind), color, alpha: 1, cap: 'round' });
     }
   }
 
@@ -101,13 +89,10 @@ export class EdgesLayer {
       if (!e) return;
       const a = graph.nodes.get(e.from)!;
       const b = graph.nodes.get(e.to)!;
-      const baseW =
-        e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
       this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
-      this.hover.stroke({ width: baseW + 3, color, alpha: 0.55, cap: 'round' });
+      this.hover.stroke({ width: widthOf(e.kind) + 3, color, alpha: 0.55, cap: 'round' });
       return;
     }
-    // node: highlight the node, and for bulldoze also pre-stage incident edges.
     const n = graph.nodes.get(target.id);
     if (!n) return;
     if (s.bulldozeHover) {
@@ -116,10 +101,8 @@ export class EdgesLayer {
         if (!e) continue;
         const a = graph.nodes.get(e.from)!;
         const b = graph.nodes.get(e.to)!;
-        const baseW =
-          e.kind === 'road' ? ROAD_WIDTH : e.kind === 'small_road' ? SMALL_ROAD_WIDTH : PATH_WIDTH;
         this.hover.moveTo(a.x, a.y).lineTo(b.x, b.y);
-        this.hover.stroke({ width: baseW + 3, color, alpha: 0.55, cap: 'round' });
+        this.hover.stroke({ width: widthOf(e.kind) + 3, color, alpha: 0.55, cap: 'round' });
       }
     }
     this.hover.circle(n.x, n.y, ROAD_WIDTH).fill({ color, alpha: 0.6 });
