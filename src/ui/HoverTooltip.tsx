@@ -143,13 +143,19 @@ const sourceLabel = (def: DemandDef): BuildingType | 'cells' =>
 
 function NodeBody({ id }: { id: NodeId }) {
   useWorldStore((s) => s.demandMapsVersion);
+  useWorldStore((s) => s.trafficVersion);
   const graph = useWorldStore((s) => s.graph);
   const demandMaps = useWorldStore((s) => s.demandMaps);
+  const traffic = useWorldStore((s) => s.traffic);
   const node = graph.nodes.get(id);
   if (!node) return <span style={{ color: '#566273' }}>node gone</span>;
+  let sum = 0;
+  for (const eid of node.edges) sum += traffic.perEdge.get(eid) ?? 0;
+  const avg = node.edges.size > 0 ? sum / node.edges.size : 0;
   return (
     <>
       <div style={HEADER}>node #{id}</div>
+      <TrafficRow value={avg} max={traffic.max} />
       <FieldRows fieldAt={(d) => fieldAtNode(d, id, demandMaps)} />
     </>
   );
@@ -157,18 +163,34 @@ function NodeBody({ id }: { id: NodeId }) {
 
 function EdgeBody({ id }: { id: EdgeId }) {
   useWorldStore((s) => s.demandMapsVersion);
+  useWorldStore((s) => s.trafficVersion);
   const graph = useWorldStore((s) => s.graph);
   const demandMaps = useWorldStore((s) => s.demandMaps);
+  const traffic = useWorldStore((s) => s.traffic);
   const edge = graph.edges.get(id);
   if (!edge) return <span style={{ color: '#566273' }}>edge gone</span>;
   const len = edgeLength(graph, id);
+  const t = traffic.perEdge.get(id) ?? 0;
   return (
     <>
       <div style={HEADER}>
         edge #{id} · {edge.kind} · {len.toFixed(0)} m
       </div>
+      <TrafficRow value={t} max={traffic.max} />
       <FieldRows fieldAt={(d) => fieldAtEdge(d, id, graph, demandMaps)} />
     </>
+  );
+}
+
+function TrafficRow({ value, max }: { value: number; max: number }) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  return (
+    <div style={ROW}>
+      <span style={KEY}>traffic</span>
+      <span style={{ color: value > 0 ? '#aab4c2' : '#566273' }}>
+        {value > 0 ? `${fmt(value)} (${pct}%)` : '·'}
+      </span>
+    </div>
   );
 }
 
