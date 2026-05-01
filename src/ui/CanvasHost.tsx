@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPixiApp } from '@render/pixi/PixiApp';
 import { Viewport } from '@render/pixi/Viewport';
 import { DebugGridLayer } from '@render/layers/DebugGridLayer';
@@ -13,6 +13,7 @@ import { createTickLoop } from '@game/core/tickLoop';
 import { useCameraStore } from '@game/store/cameraStore';
 import { useUiStore } from '@game/store/uiStore';
 import { useWorldStore } from '@game/store/worldStore';
+import { HoverRouteLabels } from './HoverRouteLabels';
 
 const SNAP_PX = 12;
 
@@ -20,6 +21,7 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onFpsRef = useRef(onFps);
   onFpsRef.current = onFps;
+  const [dims, setDims] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -65,7 +67,12 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
         frontages.setVisible(s.showFrontages);
       });
 
-      const resizeObserver = new ResizeObserver(() => viewport.onResize());
+      const syncDims = () => setDims({ w: container.clientWidth, h: container.clientHeight });
+      syncDims();
+      const resizeObserver = new ResizeObserver(() => {
+        viewport.onResize();
+        syncDims();
+      });
       resizeObserver.observe(container);
 
       // ---------- input ----------
@@ -314,5 +321,9 @@ export function CanvasHost({ onFps }: { onFps?: (fps: number) => void }) {
     };
   }, []);
 
-  return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
+  return (
+    <div ref={containerRef} style={{ position: 'absolute', inset: 0 }}>
+      <HoverRouteLabels width={dims.w} height={dims.h} />
+    </div>
+  );
 }

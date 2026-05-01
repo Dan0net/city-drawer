@@ -33,6 +33,9 @@ export interface DemandDef {
   // default-sized sink consumes ≈ 1 slot. Undefined → use raw area.
   unitArea?: number;
   palette: Palette;
+  // Render-only: flip the hover arrow so it points sink→source visually.
+  // Used for jobs so the arrow points at the workplace, not the worker.
+  flipArrow?: boolean;
 }
 
 const resourcePalette: Palette = (v, sat, out, o) => {
@@ -72,6 +75,7 @@ export const DEMAND_TYPES: ReadonlyArray<DemandDef> = [
     decay: 0.7,
     unitArea: 280,
     palette: ramp(40, 60, 110, 110, 140, 80),
+    flipArrow: true,
   },
   {
     id: 'commercial',
